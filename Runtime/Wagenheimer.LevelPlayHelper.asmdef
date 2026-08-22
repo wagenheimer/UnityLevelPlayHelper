@@ -1,0 +1,20 @@
+{
+    "name": "Wagenheimer.LevelPlayHelper",
+    "rootNamespace": "Wagenheimer.LevelPlayHelper",
+    "references": [
+        "Unity.LevelPlay"
+    ],
+    "includePlatforms": [],
+    "excludePlatforms": [
+        "WebGL",
+        "Lumin",
+        "Switch"
+    ],
+    "allowUnsafeCode": false,
+    "overrideReferences": false,
+    "precompiledReferences": [],
+    "autoReferenced": true,
+    "defineConstraints": [],
+    "versionDefines": [],
+    "noEngineReferences": false
+}
