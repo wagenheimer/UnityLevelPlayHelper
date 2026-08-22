@@ -1,6 +1,8 @@
 using System;
 using System.Collections;
 
+using Unity.Services.LevelPlay;
+
 using UnityEngine;
 
 namespace Wagenheimer.LevelPlayHelper
@@ -648,7 +650,7 @@ namespace Wagenheimer.LevelPlayHelper
             double revenue = impressionData.Revenue ?? 0d;
             Debug.Log($"[LevelPlayHelper] Impression: {impressionData.AdNetwork} / {impressionData.AdFormat} / ${revenue}");
 
-            OnAdRevenuePaid?.Invoke(impressionData.AdUnitId, revenue);
+            OnAdRevenuePaid?.Invoke(impressionData.MediationAdUnitId, revenue);
             OnImpressionDataReady?.Invoke(impressionData);
         }
 
