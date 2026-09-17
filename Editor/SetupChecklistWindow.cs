@@ -43,6 +43,13 @@ namespace Wagenheimer.LevelPlayHelper.Editor
             /// <summary>Extra, per-check evidence (paths, detected values, versions).</summary>
             public readonly List<string> Facts = new List<string>();
 
+            /// <summary>Adds several evidence lines at once (List&lt;T&gt;.Add returns void, so chains must not be used).</summary>
+            public CheckResult WithFacts(params string[] facts)
+            {
+                Facts.AddRange(facts);
+                return this;
+            }
+
             public string DocsUrl;
             public string ActionLabel;
             public Action Action;
@@ -951,9 +958,10 @@ namespace Wagenheimer.LevelPlayHelper.Editor
                 hasMainTemplate || hasLauncher
                     ? "Custom Gradle template(s) are enabled - required by older LevelPlay packages and harmless with the current one."
                     : "No custom Gradle template. Current LevelPlay packages do not need one; only enable it if a build error asks for it.")
-                .Facts.Add("mainTemplate.gradle: " + (hasMainTemplate ? "present" : "absent"))
-                .Facts.Add("launcherTemplate.gradle: " + (hasLauncher ? "present" : "absent"))
-                .Facts.Add("gradleTemplate.properties: " + (hasProperties ? "present" : "absent"));
+                .WithFacts(
+                    "mainTemplate.gradle: " + (hasMainTemplate ? "present" : "absent"),
+                    "launcherTemplate.gradle: " + (hasLauncher ? "present" : "absent"),
+                    "gradleTemplate.properties: " + (hasProperties ? "present" : "absent"));
         }
 
         void CheckIosCocoaPods()
@@ -980,8 +988,9 @@ namespace Wagenheimer.LevelPlayHelper.Editor
                     ? "Internet access is granted for the Android build (ads require it)."
                     : "Android INTERNET permission was not detected. Enable Player Settings > Android > Internet Access (Force internet permission) or declare android.permission.INTERNET in the manifest.",
                 null)
-                .Facts.Add("forceInternetPermission: " + forced)
-                .Facts.Add("declared in custom manifest: " + declared);
+                .WithFacts(
+                    "forceInternetPermission: " + forced,
+                    "declared in custom manifest: " + declared);
         }
 
         // ---------------------------------------------------------------- section 3: helper component
@@ -1087,8 +1096,9 @@ namespace Wagenheimer.LevelPlayHelper.Editor
 
                 Add(status, "App Key set (" + helper.gameObject.name + ")", detail,
                     "https://docs.unity.com/en-us/grow/levelplay/platform/get-started/add-app")
-                    .Facts.Add("Android: " + Describe(android))
-                    .Facts.Add("iOS: " + Describe(ios));
+                    .WithFacts(
+                        "Android: " + Describe(android),
+                        "iOS: " + Describe(ios));
             }
         }
 
@@ -1147,9 +1157,10 @@ namespace Wagenheimer.LevelPlayHelper.Editor
             {
                 Add(CheckStatus.Pass, "Every ad format used by the code has IDs",
                     $"Project code uses: {DescribeUsage(usesRewarded, usesInterstitial, usesBanner)}.")
-                    .Facts.Add("rewarded used: " + usesRewarded)
-                    .Facts.Add("interstitial used: " + usesInterstitial)
-                    .Facts.Add("banner used: " + usesBanner);
+                    .WithFacts(
+                        "rewarded used: " + usesRewarded,
+                        "interstitial used: " + usesInterstitial,
+                        "banner used: " + usesBanner);
                 return;
             }
 
@@ -1174,9 +1185,10 @@ namespace Wagenheimer.LevelPlayHelper.Editor
                 Add(CheckStatus.Info, "Consent configuration (" + helper.gameObject.name + ")",
                     "Privacy flags are applied before LevelPlay.Init(). Whether GDPR/CCPA/COPPA applies to your app is a legal question - review it with counsel.",
                     "https://docs.unity.com/en-us/grow/levelplay/sdk/unity/regulation-advanced-settings")
-                    .Facts.Add("enableGDPRConsent: " + gdpr + " (reads PlayerPrefs 'UserConsent', 1 = consented)")
-                    .Facts.Add("ccpaOptOut: " + ccpa)
-                    .Facts.Add("coppaChildDirected: " + coppa);
+                    .WithFacts(
+                        "enableGDPRConsent: " + gdpr + " (reads PlayerPrefs 'UserConsent', 1 = consented)",
+                        "ccpaOptOut: " + ccpa,
+                        "coppaChildDirected: " + coppa);
 
                 if (apiUsage.ContainsKey("SetUserConsent"))
                     Add(CheckStatus.Pass, "Consent collected then re-applied",
@@ -1204,9 +1216,10 @@ namespace Wagenheimer.LevelPlayHelper.Editor
                         ? "Cadence values are positive and the initial interval is not shorter than the minimum interval."
                         : "Cadence values look inconsistent (zero/negative, or initialAdInterval below minAdInterval). Interstitial pacing is what protects retention.",
                     "https://docs.unity.com/en-us/grow/levelplay/sdk/unity/unity-sdk-installation")
-                    .Facts.Add($"minAdInterval: {min}")
-                    .Facts.Add($"initialAdInterval: {initial}")
-                    .Facts.Add($"adsNeededToReduceInterval: {reduce}");
+                    .WithFacts(
+                        $"minAdInterval: {min}",
+                        $"initialAdInterval: {initial}",
+                        $"adsNeededToReduceInterval: {reduce}");
             }
         }
 
