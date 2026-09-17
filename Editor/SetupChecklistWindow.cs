@@ -2,6 +2,7 @@ using System;
 using System.Collections.Generic;
 using System.IO;
 using System.Linq;
+using System.Text;
 using System.Text.RegularExpressions;
 
 using UnityEditor;
@@ -53,6 +54,12 @@ namespace Wagenheimer.LevelPlayHelper.Editor
             public string DocsUrl;
             public string ActionLabel;
             public Action Action;
+
+            /// <summary>
+            /// Ready-to-paste task for an AI coding agent, built from this check's own evidence.
+            /// Rendered as a "Copy prompt" button.
+            /// </summary>
+            public string Prompt;
 
             /// <summary>Optional custom control rendered under the row (used by the Editor test mode switch).</summary>
             public Func<VisualElement> CustomControl;
@@ -270,6 +277,18 @@ namespace Wagenheimer.LevelPlayHelper.Editor
             if (failures > 0) row.Add(Chip($"{failures} fail", ColFail));
             if (warnings > 0) row.Add(Chip($"{warnings} warning", ColWarn));
 
+            var pending = sections.SelectMany(s => s.Items)
+                .Where(i => i.Status == CheckStatus.Fail || i.Status == CheckStatus.Warning)
+                .ToList();
+            if (pending.Count > 0)
+            {
+                var copyAll = new Button(() => CopyPendingPrompts(pending)) { text = "Copy pending as prompt" };
+                copyAll.style.height = 20;
+                copyAll.style.fontSize = 10;
+                copyAll.style.marginLeft = 8;
+                row.Add(copyAll);
+            }
+
             var track = new VisualElement();
             track.style.height = 6;
             track.style.marginTop = 8;
@@ -455,6 +474,20 @@ namespace Wagenheimer.LevelPlayHelper.Editor
                 docs.style.marginLeft = 6;
                 docs.style.alignSelf = Align.FlexStart;
                 row.Add(docs);
+            }
+
+            if (!string.IsNullOrEmpty(item.Prompt))
+            {
+                var copy = new Button(() =>
+                {
+                    EditorGUIUtility.systemCopyBuffer = item.Prompt;
+                    Debug.Log("[LevelPlayHelper] Prompt copied to the clipboard:\n" + item.Prompt);
+                }) { text = "Copy prompt" };
+                copy.style.height = 18;
+                copy.style.fontSize = 9.5f;
+                copy.style.marginLeft = 6;
+                copy.style.alignSelf = Align.FlexStart;
+                row.Add(copy);
             }
 
             if (item.Action != null)
@@ -645,6 +678,8 @@ namespace Wagenheimer.LevelPlayHelper.Editor
 
             BeginSection("8 - Release validation", "Cannot be verified from the Editor - tick these off before shipping.");
             ManualReleaseItems();
+
+            ApplyRemedies();
 
             lastRun = DateTime.Now;
             Rebuild();
@@ -1717,6 +1752,391 @@ namespace Wagenheimer.LevelPlayHelper.Editor
             Manual("Mock ads vs real ads expectations understood",
                 "Mock ads fire OnAdLoaded/OnAdDisplayed/OnAdRewarded/OnAdClosed only; failures, clicks and ILRD require a device build.",
                 "https://docs.unity.com/en-us/grow/levelplay/sdk/unity/test-suite");
+        }
+
+        // ---------------------------------------------------------------- remedies (fix buttons + AI prompts)
+
+        const string AdsMediationPackageName = "com.unity.services.levelplay";
+
+        List<CheckResult> AllItems() => sections.SelectMany(s => s.Items).ToList();
+
+        CheckResult Find(string titlePrefix, CheckStatus? status = null) =>
+            AllItems().FirstOrDefault(i => i.Title.StartsWith(titlePrefix, StringComparison.Ordinal)
+                                           && (status == null || i.Status == status.Value));
+
+        void Fix(CheckResult item, string label, Action action)
+        {
+            item.ActionLabel = label;
+            item.Action = () =>
+            {
+                try
+                {
+                    action();
+                }
+                catch (Exception e)
+                {
+                    Debug.LogError($"[LevelPlayHelper] Fix '{label}' failed: {e.Message}");
+                }
+            };
+        }
+
+        string ProjectLabel() =>
+            $"Unity {Application.unityVersion}, com.unity.services.levelplay " +
+            $"{(string.IsNullOrEmpty(sdkVersion) ? "not installed" : sdkVersion)}, " +
+            $"com.wagenheimer.levelplayhelper {(string.IsNullOrEmpty(helperVersion) ? "unknown" : helperVersion)}, " +
+            $"active build target {LevelPlayEditorTestMode.ActiveTargetName}";
+
+        string BuildPrompt(CheckResult item, string task)
+        {
+            var sb = new StringBuilder();
+            sb.AppendLine("Context: " + ProjectLabel() + ".");
+            sb.AppendLine($"LevelPlay setup checklist item: {item.Title} ({item.Status}).");
+            sb.AppendLine("Detected: " + item.Detail);
+            if (item.Facts.Count > 0)
+            {
+                sb.AppendLine("Evidence:");
+                foreach (var fact in item.Facts)
+                    sb.AppendLine("- " + fact);
+            }
+            if (!string.IsNullOrEmpty(item.DocsUrl))
+                sb.AppendLine("Docs: " + item.DocsUrl);
+            sb.AppendLine();
+            sb.AppendLine("Task: " + task);
+            sb.AppendLine("Verify the result with Tools > Wagenheimer > Level Play Helper > Setup Checklist.");
+            return sb.ToString();
+        }
+
+        void Prompt(string titlePrefix, string task)
+        {
+            var item = Find(titlePrefix, CheckStatus.Fail) ?? Find(titlePrefix, CheckStatus.Warning);
+            if (item != null)
+                item.Prompt = BuildPrompt(item, task);
+        }
+
+        void CopyPendingPrompts(List<CheckResult> pending)
+        {
+            var sb = new StringBuilder();
+            sb.AppendLine("Fix the LevelPlay integration problems found by the setup checklist in this Unity project.");
+            sb.AppendLine("Context: " + ProjectLabel() + ".");
+            sb.AppendLine("Work through the items one at a time, keep each change minimal, and re-run Tools > Wagenheimer > Level Play Helper > Setup Checklist after each fix.");
+            sb.AppendLine();
+
+            for (var i = 0; i < pending.Count; i++)
+            {
+                var item = pending[i];
+                sb.AppendLine($"{i + 1}) [{item.Status}] {item.Title}");
+                sb.AppendLine("   detected: " + item.Detail);
+                foreach (var fact in item.Facts)
+                    sb.AppendLine("   - " + fact);
+
+                if (!string.IsNullOrEmpty(item.Prompt))
+                {
+                    var idx = item.Prompt.IndexOf("Task: ", StringComparison.Ordinal);
+                    if (idx >= 0)
+                        sb.AppendLine("   task: " + item.Prompt.Substring(idx + 6).Replace("\n", " ").Trim());
+                }
+                if (!string.IsNullOrEmpty(item.DocsUrl))
+                    sb.AppendLine("   docs: " + item.DocsUrl);
+                sb.AppendLine();
+            }
+
+            EditorGUIUtility.systemCopyBuffer = sb.ToString();
+            Debug.Log($"[LevelPlayHelper] Copied {pending.Count} pending item(s) as a prompt:\n" + sb);
+        }
+
+        /// <summary>Attaches one-click fixes where a fix is safe, and AI prompts everywhere else.</summary>
+        void ApplyRemedies()
+        {
+            // ---------------- one-click fixes
+
+            var item = Find("Ads Mediation package installed", CheckStatus.Fail);
+            if (item != null)
+                Fix(item, "Install", () => InstallPackage(AdsMediationPackageName));
+
+            item = Find("SDK version meets", CheckStatus.Fail) ?? Find("SDK version meets", CheckStatus.Warning);
+            if (item != null)
+                Fix(item, "Upgrade", () => InstallPackage(AdsMediationPackageName));
+
+            item = Find("No legacy SDK copy left in Assets", CheckStatus.Warning);
+            if (item != null)
+                Fix(item, "Delete folder", DeleteLegacyIronSourceFolder);
+
+            item = Find("SDK auto-init disabled", CheckStatus.Warning);
+            if (item != null)
+                Fix(item, "Disable auto-init", () => SetMediationBool("EnableIronsourceSDKInitAPI", false));
+
+            item = Find("Developer flags off for release", CheckStatus.Warning);
+            if (item != null)
+                Fix(item, "Turn flags off", DisableDeveloperFlags);
+
+            item = Find("Android native dependencies resolved", CheckStatus.Warning);
+            if (item != null)
+                Fix(item, "Run Android Resolver", () => RunMenu("Assets/External Dependency Manager/Android Resolver/Resolve"));
+
+            item = Find("Adapter dependency descriptors committed", CheckStatus.Warning);
+            if (item != null)
+                Fix(item, "Open Network Manager", () => RunMenu("Ads Mediation/Network Manager"));
+
+            item = Find("Android INTERNET permission", CheckStatus.Warning);
+            if (item != null)
+                Fix(item, "Enable Internet Access", () =>
+                {
+                    PlayerSettings.Android.forceInternetPermission = true;
+                    Debug.Log("[LevelPlayHelper] Android Internet Access enabled.");
+                    RunChecks();
+                });
+
+            item = Find("LevelPlayHelper component present", CheckStatus.Fail);
+            if (item != null)
+                Fix(item, "Create prefab", CreateHelperPrefab);
+
+            item = Find("Ad cadence configuration sane", CheckStatus.Warning);
+            if (item != null)
+                Fix(item, "Normalize intervals", NormalizeCadence);
+
+            item = Find("Test Suite disabled for release", CheckStatus.Warning);
+            if (item != null)
+                Fix(item, "Turn Test Suite off", () => SetHelperBool("enableTestSuite", false));
+
+            item = Find("Android scripting backend is IL2CPP", CheckStatus.Warning);
+            if (item != null)
+                Fix(item, "Use IL2CPP", () =>
+                {
+                    PlayerSettings.SetScriptingBackend(NamedBuildTarget.Android, ScriptingImplementation.IL2CPP);
+                    Debug.Log("[LevelPlayHelper] Android scripting backend set to IL2CPP.");
+                    RunChecks();
+                });
+
+            item = Find("Android target includes ARM64", CheckStatus.Warning);
+            if (item != null)
+                Fix(item, "Add ARM64", () =>
+                {
+                    PlayerSettings.Android.targetArchitectures |= AndroidArchitecture.ARM64;
+                    Debug.Log("[LevelPlayHelper] ARM64 added to the Android target architectures.");
+                    RunChecks();
+                });
+
+            item = Find("Android AD_ID permission", CheckStatus.Fail);
+            if (item != null)
+                Fix(item, "Declare via SDK", () => SetMediationBool("DeclareAD_IDPermission", true));
+
+            item = Find("iOS SKAdNetwork IDs automated", CheckStatus.Warning);
+            if (item != null)
+                Fix(item, "Enable automation", () => SetNetworkBool("AddNetworksSkadnetworkID", true));
+
+            // ---------------- AI prompts (real credentials, code changes, legal or layout decisions)
+
+            Prompt("App Key set",
+                "Get the App Key for this app from the LevelPlay dashboard (Apps, select the app, copy the alphanumeric key under the app title) and set androidAppKey and iosAppKey on the LevelPlayHelper instance. Treat keys as secrets: never commit production keys to a public repository.");
+
+            Prompt("Ad Unit IDs configured",
+                "Create the ad units in the LevelPlay dashboard (Setup > Ad Units) for every format and platform this build ships, then fill androidInterstitialAdUnitId, androidRewardedAdUnitId, iosInterstitialAdUnitId and iosRewardedAdUnitId on the LevelPlayHelper instance. Leaving a field empty disables that format on that platform.");
+
+            Prompt("Every ad format used by the code has IDs",
+                "The game calls ad formats that have no Ad Unit ID on either platform (see the evidence). For each one, either create the ad unit in the LevelPlay dashboard and fill the matching field on the LevelPlayHelper instance, or stop calling that format in the game code.");
+
+            Prompt("No placeholder credentials",
+                "Replace the placeholder credentials listed in the evidence with the real values from the LevelPlay dashboard. Editor mock ads accept anything, which is how placeholders reach a device build unnoticed.");
+
+            Prompt("Consent configuration",
+                "Review the GDPR/CCPA/COPPA flags with legal counsel. If a consent dialog collects the answer, call LevelPlayHelper.Instance.SetUserConsent(bool) as soon as the player answers and before the SDK initializes, so the SDK is told before Init.");
+
+            Prompt("Single helper instance",
+                "Keep exactly one LevelPlayHelper instance: decide which prefab or scene object holds the credentials, delete the others, and make sure the surviving one is the instance the runtime creates.");
+
+            Prompt("Native dependency manager installed",
+                "Install a native dependency manager: add the OpenUPM scoped registry https://package.openupm.com with scope com.google.external-dependency-manager to Packages/manifest.json and add com.google.external-dependency-manager, or import the Mobile Dependency Resolver that ships with the Ads Mediation package. Android builds fail without it.");
+
+            Prompt("App Tracking Transparency implemented",
+                "Implement ATT before LevelPlay initializes on iOS: request authorization with ATTrackingStatusBinding from com.unity.ads.ios-support, wait for the answer, then initialize the SDK, and skip the prompt when the authorization status is already determined.");
+
+            Prompt("NSUserTrackingUsageDescription in Info.plist",
+                "Create an editor post-build step that writes NSUserTrackingUsageDescription into the generated Xcode Info.plist, since Unity 6 has no Player Settings field for it. Use a specific, honest description, otherwise Apple rejects the build.");
+
+            Prompt("AdMob mediation settings",
+                "Set the AdMob app ids (they start with ca-app-pub-) for both platforms in Ads Mediation > Developer Settings > LevelPlay Mediation Settings, or disable AdMob mediation if this game does not use it.");
+
+            Prompt("Rewarded flow",
+                "Make the rewarded flow robust: gate the reward button on the readiness flag (RewardedReady / IsRewardedAdReady()) and grant the reward only from the ad callback, never when the button is pressed, so an ad that fails to load cannot hand out a free reward.");
+
+            Prompt("Interstitial pacing",
+                "Add a frequency cap before showing an interstitial (for example every N level events, or 5 to 7 minutes) so retention is not hurt. Frequency capping is part of the LevelPlay production checklist.");
+
+            Prompt("Impression-level revenue (ILRD) forwarded",
+                "Subscribe to LevelPlayHelper.OnAdRevenuePaid, or OnImpressionDataReady when you need the full payload (it fires on a background thread, so marshal to the main thread), and forward the revenue and ad source to the analytics platform so ad revenue can be reconciled.");
+
+            Prompt("No deprecated / removed LevelPlay APIs",
+                "Migrate the symbols listed in the evidence to LevelPlay 9.x: IronSource.Agent becomes LevelPlay.Init with LevelPlayRewardedAd, LevelPlayInterstitialAd and LevelPlayBannerAd; the com.unity3d.mediation namespace becomes Unity.Services.LevelPlay; do_not_sell and is_child_directed become LevelPlayPrivacySettings calls; delete any OnApplicationPause override that only forwarded to IronSource.");
+        }
+
+        // ---------------- fix implementations
+
+        static void InstallPackage(string package)
+        {
+            Debug.Log($"[LevelPlayHelper] Installing {package}. Package Manager resolves it in the background - re-run the checklist when it finishes.");
+            UnityEditor.PackageManager.Client.Add(package);
+        }
+
+        void DeleteLegacyIronSourceFolder()
+        {
+            const string path = "Assets/IronSource";
+            if (!AssetDatabase.IsValidFolder(path))
+                return;
+
+            if (!EditorUtility.DisplayDialog("LevelPlay Helper",
+                    "Delete " + path + "?\n\nThe UPM Ads Mediation package replaces it. Keeping both duplicates the SDK and breaks Android/iOS builds.",
+                    "Delete", "Cancel"))
+                return;
+
+            AssetDatabase.DeleteAsset(path);
+            Debug.Log("[LevelPlayHelper] Deleted Assets/IronSource.");
+            RunChecks();
+        }
+
+        void DisableDeveloperFlags()
+        {
+            var so = MediationSettingsAsset();
+            if (so == null)
+            {
+                Debug.LogWarning("[LevelPlayHelper] LevelPlayMediationSettings.asset not found - open Ads Mediation > Developer Settings once.");
+                return;
+            }
+
+            SetBoolProperty(so, "EnableAdapterDebug", false);
+            SetBoolProperty(so, "EnableIntegrationHelper", false);
+            so.ApplyModifiedProperties();
+            AssetDatabase.SaveAssets();
+            Debug.Log("[LevelPlayHelper] Disabled EnableAdapterDebug and EnableIntegrationHelper.");
+            RunChecks();
+        }
+
+        void SetMediationBool(string property, bool value)
+        {
+            var so = MediationSettingsAsset();
+            if (so == null)
+            {
+                Debug.LogWarning("[LevelPlayHelper] LevelPlayMediationSettings.asset not found - open Ads Mediation > Developer Settings once.");
+                return;
+            }
+
+            if (!SetBoolProperty(so, property, value))
+                return;
+
+            so.ApplyModifiedProperties();
+            AssetDatabase.SaveAssets();
+            Debug.Log($"[LevelPlayHelper] {property} set to {value}.");
+            RunChecks();
+        }
+
+        void SetNetworkBool(string property, bool value)
+        {
+            var so = NetworkSettingsAsset();
+            if (so == null)
+            {
+                Debug.LogWarning("[LevelPlayHelper] Network Manager settings asset not found - open Ads Mediation > Network Manager once.");
+                return;
+            }
+
+            if (!SetBoolProperty(so, property, value))
+                return;
+
+            so.ApplyModifiedProperties();
+            AssetDatabase.SaveAssets();
+            Debug.Log($"[LevelPlayHelper] {property} set to {value}.");
+            RunChecks();
+        }
+
+        static bool SetBoolProperty(SerializedObject so, string property, bool value)
+        {
+            var prop = so.FindProperty(property);
+            if (prop == null)
+            {
+                Debug.LogWarning($"[LevelPlayHelper] Property '{property}' not found on {so.targetObject.GetType().Name}.");
+                return false;
+            }
+
+            prop.boolValue = value;
+            return true;
+        }
+
+        void SetHelperBool(string property, bool value)
+        {
+            var helper = helpers.Select(h => h.Component).FirstOrDefault();
+            if (helper == null)
+            {
+                Debug.LogWarning("[LevelPlayHelper] No LevelPlayHelper instance to edit.");
+                return;
+            }
+
+            var so = new SerializedObject(helper);
+            if (!SetBoolProperty(so, property, value))
+                return;
+
+            so.ApplyModifiedProperties();
+            AssetDatabase.SaveAssets();
+            Debug.Log($"[LevelPlayHelper] {property} set to {value} on {helper.gameObject.name}.");
+            RunChecks();
+        }
+
+        void NormalizeCadence()
+        {
+            var helper = helpers.Select(h => h.Component).FirstOrDefault();
+            if (helper == null)
+                return;
+
+            var so = new SerializedObject(helper);
+            var ads = so.FindProperty("adsConfig");
+            var min = ads?.FindPropertyRelative("minAdInterval");
+            var initial = ads?.FindPropertyRelative("initialAdInterval");
+            var reduce = ads?.FindPropertyRelative("adsNeededToReduceInterval");
+            if (min == null || initial == null || reduce == null)
+                return;
+
+            min.intValue = Mathf.Max(1, min.intValue);
+            initial.intValue = Mathf.Max(min.intValue, initial.intValue);
+            reduce.intValue = Mathf.Max(1, reduce.intValue);
+            so.ApplyModifiedProperties();
+            AssetDatabase.SaveAssets();
+            Debug.Log("[LevelPlayHelper] Ad cadence normalized.");
+            RunChecks();
+        }
+
+        void RunMenu(string menuPath)
+        {
+            if (EditorApplication.ExecuteMenuItem(menuPath))
+                Debug.Log($"[LevelPlayHelper] Ran menu item: {menuPath}.");
+            else
+                Debug.LogWarning($"[LevelPlayHelper] Menu item not found: {menuPath}. Open it manually from the menu bar.");
+
+            RunChecks();
+        }
+
+        void CreateHelperPrefab()
+        {
+            const string resources = "Assets/Resources";
+            const string folder = resources + "/Monetization";
+            const string path = folder + "/LevelPlayHelper.prefab";
+
+            if (File.Exists(path))
+            {
+                Debug.Log($"[LevelPlayHelper] {path} already exists.");
+                RunChecks();
+                return;
+            }
+
+            if (!AssetDatabase.IsValidFolder(resources))
+                AssetDatabase.CreateFolder("Assets", "Resources");
+            if (!AssetDatabase.IsValidFolder(folder))
+                AssetDatabase.CreateFolder(resources, "Monetization");
+
+            var go = new GameObject("LevelPlayHelper");
+            go.AddComponent<LevelPlayHelper>();
+            PrefabUtility.SaveAsPrefabAsset(go, path);
+            UnityEngine.Object.DestroyImmediate(go);
+            AssetDatabase.Refresh();
+
+            Debug.Log($"[LevelPlayHelper] Created {path}. Fill in the App Key and the Ad Unit IDs there; it stays reachable at runtime because it lives under a Resources folder.");
+            RunChecks();
         }
 
         // ---------------------------------------------------------------- scanners
