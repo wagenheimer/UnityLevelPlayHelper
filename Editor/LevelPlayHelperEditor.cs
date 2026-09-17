@@ -23,7 +23,7 @@ namespace Wagenheimer.LevelPlayHelper.Editor
             DrawFooterLinks();
         }
 
-        void DrawHeader()
+        new void DrawHeader()
         {
             EditorGUILayout.HelpBox(
                 "Level Play Helper - reusable LevelPlay (Ads Mediation) manager.\n" +

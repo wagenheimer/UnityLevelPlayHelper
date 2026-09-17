@@ -53,6 +53,9 @@ namespace Wagenheimer.LevelPlayHelper.Editor
             public string DocsUrl;
             public string ActionLabel;
             public Action Action;
+
+            /// <summary>Optional custom control rendered under the row (used by the Editor test mode switch).</summary>
+            public Func<VisualElement> CustomControl;
         }
 
         internal sealed class Section
@@ -61,7 +64,9 @@ namespace Wagenheimer.LevelPlayHelper.Editor
             public string Subtitle = "";
             public readonly List<CheckResult> Items = new List<CheckResult>();
 
-            public int AutomatedTotal => Items.Count(i => i.Status != CheckStatus.Manual);
+            public int AutomatedTotal => Items.Count(i => i.Status == CheckStatus.Pass
+                                                        || i.Status == CheckStatus.Warning
+                                                        || i.Status == CheckStatus.Fail);
             public int AutomatedPassed => Items.Count(i => i.Status == CheckStatus.Pass);
             public bool HasFail => Items.Any(i => i.Status == CheckStatus.Fail);
             public bool HasWarning => Items.Any(i => i.Status == CheckStatus.Warning);
@@ -320,7 +325,7 @@ namespace Wagenheimer.LevelPlayHelper.Editor
 
             var counter = $"{section.AutomatedPassed}/{section.AutomatedTotal}";
             if (section.AutomatedTotal == 0)
-                counter = "manual";
+                counter = section.Items.Any(i => i.Status != CheckStatus.Manual) ? "info" : "manual";
             head.Add(Chip(counter, accent));
 
             var body = new VisualElement();
@@ -400,6 +405,16 @@ namespace Wagenheimer.LevelPlayHelper.Editor
                 detail.style.whiteSpace = WhiteSpace.Normal;
                 detail.style.marginTop = 2;
                 column.Add(detail);
+            }
+
+            if (item.CustomControl != null)
+            {
+                var custom = item.CustomControl();
+                if (custom != null)
+                {
+                    custom.style.marginTop = 6;
+                    column.Add(custom);
+                }
             }
 
             if (item.Facts.Count > 0)
@@ -570,6 +585,11 @@ namespace Wagenheimer.LevelPlayHelper.Editor
 
             sections.Clear();
 
+            BeginSection("0 - Editor play mode", "Play mode can serve LevelPlay mock ads and the Unity IAP fake store: no device, no credentials. Enable it so your monetization assembly compiles in the Editor.");
+            CheckEditorTestMode();
+            CheckEditorMockAds();
+            CheckIapFakeStore();
+
             BeginSection("1 - Package & SDK", "Distribution, version thresholds and developer flags of the Ads Mediation package.");
             CheckSdkInstalled();
             CheckSdkVersion();
@@ -652,6 +672,113 @@ namespace Wagenheimer.LevelPlayHelper.Editor
         }
 
         CheckResult Manual(string title, string detail, string docs = null) => Add(CheckStatus.Manual, title, detail, docs);
+
+        // ---------------------------------------------------------------- section 0: editor play mode
+
+        void CheckEditorTestMode()
+        {
+            var wanted = LevelPlayEditorTestMode.EffectiveDefines;
+            var enabled = LevelPlayEditorTestMode.Enabled;
+            var consistent = LevelPlayEditorTestMode.IsConsistent(out var consistencyDetail);
+
+            CheckStatus status;
+            string detail;
+
+            if (enabled && consistent)
+            {
+                status = CheckStatus.Pass;
+                detail = "Active: your monetization assembly compiles in Play mode, so mock ads and the IAP fake store are available.";
+            }
+            else if (enabled)
+            {
+                status = CheckStatus.Warning;
+                detail = consistencyDetail;
+            }
+            else if (!consistent)
+            {
+                status = CheckStatus.Warning;
+                detail = consistencyDetail + " Use the switch below to make the state consistent again.";
+            }
+            else if (wanted.Count > 0)
+            {
+                status = CheckStatus.Info;
+                detail = "Off: Play mode keeps the no-op monetization service until you enable it.";
+            }
+            else
+            {
+                status = CheckStatus.Info;
+                detail = "Nothing to enable: no project define gates your monetization assembly. Type one below if your code is gated.";
+            }
+
+            var item = Add(status, "Enabled on Editor", detail, null);
+            item.Facts.Add(LevelPlayEditorTestMode.StatusText);
+            item.Facts.Add("active build target: " + LevelPlayEditorTestMode.ActiveTargetName);
+            item.Facts.Add("block builds while enabled: " + LevelPlayEditorTestMode.BlockBuilds);
+
+            var candidates = LevelPlayEditorTestMode.DetectCandidates();
+            item.Facts.Add(candidates.Count > 0
+                ? "asmdef defineConstraints detected: " + string.Join(", ", candidates)
+                : "no defineConstraints found in project asmdefs");
+
+            item.CustomControl = BuildEditorTestModeControls;
+        }
+
+        VisualElement BuildEditorTestModeControls()
+        {
+            var box = new VisualElement();
+
+            var toggle = new Toggle("Enabled on Editor") { value = LevelPlayEditorTestMode.Enabled };
+            toggle.style.unityFontStyleAndWeight = FontStyle.Bold;
+            toggle.RegisterValueChangedCallback(evt =>
+            {
+                LevelPlayEditorTestMode.SetEnabled(evt.newValue);
+                RunChecks();
+            });
+            box.Add(toggle);
+
+            var defines = new TextField("Defines") { value = LevelPlayEditorTestMode.ConfiguredDefinesText };
+            defines.tooltip = "Separate with ';'. Leave empty to auto-detect the project's asmdef defineConstraints.";
+            defines.style.marginTop = 4;
+            defines.RegisterValueChangedCallback(evt => LevelPlayEditorTestMode.ConfiguredDefinesText = evt.newValue);
+            box.Add(defines);
+
+            var block = new Toggle("Block builds while enabled") { value = LevelPlayEditorTestMode.BlockBuilds };
+            block.style.marginTop = 2;
+            block.RegisterValueChangedCallback(evt => LevelPlayEditorTestMode.BlockBuilds = evt.newValue);
+            box.Add(block);
+
+            var note = new Label("Mock ads accept any credential, so the App Key and Ad Unit IDs can stay empty while you iterate. Real mediation only happens on a device build.");
+            note.style.fontSize = 10;
+            note.style.color = ColTextDim;
+            note.style.whiteSpace = WhiteSpace.Normal;
+            note.style.marginTop = 4;
+            box.Add(note);
+
+            return box;
+        }
+
+        void CheckEditorMockAds()
+        {
+            Add(CheckStatus.Info, "Editor mock ads",
+                "In Play mode the LevelPlay SDK serves mock ads and the helper falls back to mock credentials when the Inspector is empty, so the rewarded/interstitial flows can be exercised without a device. " +
+                "OnAdLoadFailed, clicks and ILRD only happen on a device build.",
+                "https://docs.unity.com/en-us/grow/levelplay/sdk/unity/test-suite");
+        }
+
+        void CheckIapFakeStore()
+        {
+            var version = GetPackageVersion("com.unity.purchasing");
+            if (string.IsNullOrEmpty(version))
+            {
+                Add(CheckStatus.Info, "In-app purchases (Editor fake store)",
+                    "com.unity.purchasing is not installed, so there is no store to mock.");
+                return;
+            }
+
+            Add(CheckStatus.Pass, "In-app purchases (Editor fake store)",
+                $"Unity IAP {version} uses its built-in fake store in Play mode, so purchase, restore and entitlement flows run without Play Billing or the App Store. Real receipts require a device build.")
+                .WithFacts("receipt validation is skipped in the Editor by design");
+        }
 
         // ---------------------------------------------------------------- section 1: package & SDK
 

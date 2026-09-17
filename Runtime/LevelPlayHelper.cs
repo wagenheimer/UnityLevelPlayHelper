@@ -174,6 +174,40 @@ namespace Wagenheimer.LevelPlayHelper
         private static bool IsMobilePlatform =>
             Application.isMobilePlatform;
 
+        /// <summary>
+        /// True when the LevelPlay SDK can serve ads here. The SDK serves mock ads inside the
+        /// Editor, so Play mode is supported no matter which build target is active.
+        /// </summary>
+        private static bool AdsSupported =>
+#if UNITY_EDITOR
+            true;
+#else
+            IsMobilePlatform;
+#endif
+
+#if UNITY_EDITOR
+        // Mock ads accept any credential value, so Play mode works with an empty Inspector.
+        private const string EditorMockAppKey = "editor-mock-app-key";
+        private const string EditorMockInterstitialId = "editor-mock-interstitial";
+        private const string EditorMockRewardedId = "editor-mock-rewarded";
+#endif
+
+        /// <summary>Interstitial id actually used, falling back to a mock id in the Editor.</summary>
+        private string EffectiveInterstitialAdUnitId =>
+#if UNITY_EDITOR
+            string.IsNullOrEmpty(InterstitialAdUnitId) ? EditorMockInterstitialId : InterstitialAdUnitId;
+#else
+            InterstitialAdUnitId;
+#endif
+
+        /// <summary>Rewarded id actually used, falling back to a mock id in the Editor.</summary>
+        private string EffectiveRewardedAdUnitId =>
+#if UNITY_EDITOR
+            string.IsNullOrEmpty(RewardedAdUnitId) ? EditorMockRewardedId : RewardedAdUnitId;
+#else
+            RewardedAdUnitId;
+#endif
+
         #endregion
 
         #region Initialization
@@ -192,16 +226,22 @@ namespace Wagenheimer.LevelPlayHelper
             if (isSdkInitialized)
                 return;
 
-            if (!IsMobilePlatform)
+            if (!AdsSupported)
             {
                 Debug.Log("[LevelPlayHelper] Not a mobile platform - ads disabled.");
                 return;
             }
 
-            if (string.IsNullOrEmpty(AppKey))
+            var appKey = AppKey;
+            if (string.IsNullOrEmpty(appKey))
             {
+#if UNITY_EDITOR
+                appKey = EditorMockAppKey;
+                Debug.LogWarning("[LevelPlayHelper] App Key is empty - initializing with the Editor mock key so Play mode can serve mock ads. Set the real key before building to device.");
+#else
                 Debug.LogError("[LevelPlayHelper] App Key is empty. Fill it in the Inspector.");
                 return;
+#endif
             }
 
             ApplyPrivacySettings();
@@ -213,7 +253,7 @@ namespace Wagenheimer.LevelPlayHelper
                 LevelPlay.SetMetaData("is_test_suite", "enable");
 
             Debug.Log($"[LevelPlayHelper] Initializing LevelPlay SDK...");
-            LevelPlay.Init(AppKey);
+            LevelPlay.Init(appKey);
         }
 
         private void ApplyPrivacySettings()
@@ -268,9 +308,10 @@ namespace Wagenheimer.LevelPlayHelper
 
         private void CreateAdObjects()
         {
-            if (!string.IsNullOrEmpty(InterstitialAdUnitId))
+            var interstitialId = EffectiveInterstitialAdUnitId;
+            if (!string.IsNullOrEmpty(interstitialId))
             {
-                interstitialAd = new LevelPlayInterstitialAd(InterstitialAdUnitId);
+                interstitialAd = new LevelPlayInterstitialAd(interstitialId);
 
                 interstitialAd.OnAdLoaded += OnInterstitialLoaded;
                 interstitialAd.OnAdLoadFailed += OnInterstitialLoadFailed;
@@ -286,9 +327,10 @@ namespace Wagenheimer.LevelPlayHelper
                 Debug.Log("[LevelPlayHelper] No interstitial ad unit configured for this platform.");
             }
 
-            if (!string.IsNullOrEmpty(RewardedAdUnitId))
+            var rewardedId = EffectiveRewardedAdUnitId;
+            if (!string.IsNullOrEmpty(rewardedId))
             {
-                rewardedAd = new LevelPlayRewardedAd(RewardedAdUnitId);
+                rewardedAd = new LevelPlayRewardedAd(rewardedId);
 
                 rewardedAd.OnAdLoaded += OnRewardedLoaded;
                 rewardedAd.OnAdLoadFailed += OnRewardedLoadFailed;
