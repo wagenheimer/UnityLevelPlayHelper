@@ -2153,25 +2153,25 @@ namespace Wagenheimer.LevelPlayHelper.Editor
             var symbols = new Dictionary<string, string[]>(StringComparer.Ordinal)
             {
                 { "LevelPlay.Init", new[] { "LevelPlay.Init(" } },
-                { "ShowRewarded", new[] { "ShowRewarded(" } },
-                { "ShowRewardedAd", new[] { "ShowRewardedAd(" } },
-                { "IsRewardedAdReady", new[] { "IsRewardedAdReady(" } },
+                { "ShowRewarded", new[] { ".ShowRewarded(" } },
+                { "ShowRewardedAd", new[] { ".ShowRewardedAd(" } },
+                { "IsRewardedAdReady", new[] { ".IsRewardedAdReady(" } },
                 { "RewardedReady", new[] { "RewardedReady" } },
-                { "ShowInterstitial", new[] { "ShowInterstitial(" } },
-                { "ShowBanner", new[] { "ShowBanner(" } },
-                { "CreateBanner", new[] { "CreateBanner(" } },
-                { "SetBidFloor", new[] { "SetBidFloor(" } },
+                { "ShowInterstitial", new[] { ".ShowInterstitial(" } },
+                { "ShowBanner", new[] { ".ShowBanner(" } },
+                { "CreateBanner", new[] { ".CreateBanner(" } },
+                { "SetBidFloor", new[] { ".SetBidFloor(" } },
                 { "AdInterval", new[] { "AdInterval" } },
                 { "EventsToShowAd", new[] { "EventsToShowAd" } },
                 { "lastAdTime", new[] { "lastAdTime" } },
                 { "AdRevenuePaid", new[] { "AdRevenuePaid" } },
                 { "OnImpressionDataReady", new[] { "OnImpressionDataReady" } },
                 { "OnAdImpressionDataReady", new[] { "OnAdImpressionDataReady" } },
-                { "SetGDPRConsent", new[] { "SetGDPRConsent(" } },
-                { "SetGDPRConsents", new[] { "SetGDPRConsents(" } },
-                { "SetCCPA", new[] { "SetCCPA(" } },
-                { "SetCOPPA", new[] { "SetCOPPA(" } },
-                { "SetUserConsent", new[] { "SetUserConsent(" } },
+                { "SetGDPRConsent", new[] { ".SetGDPRConsent(" } },
+                { "SetGDPRConsents", new[] { ".SetGDPRConsents(" } },
+                { "SetCCPA", new[] { ".SetCCPA(" } },
+                { "SetCOPPA", new[] { ".SetCOPPA(" } },
+                { "SetUserConsent", new[] { ".SetUserConsent(" } },
                 { "ATT", new[] { "ATTrackingStatusBinding", "ATTrackingManager", "ATTRequester" } },
                 { "NSUserTrackingUsageDescription", new[] { "NSUserTrackingUsageDescription" } },
                 { "IronSource.Agent", new[] { "IronSource.Agent" } },
@@ -2203,16 +2203,24 @@ namespace Wagenheimer.LevelPlayHelper.Editor
 
                 foreach (var pair in symbols)
                 {
-                    if (pair.Value.Any(token => text.IndexOf(token, StringComparison.Ordinal) >= 0))
+                    var token = pair.Value.FirstOrDefault(t => text.IndexOf(t, StringComparison.Ordinal) >= 0);
+                    if (token == null)
+                        continue;
+
+                    // A file that declares the method is the abstraction (an interface or a service
+                    // wrapper) rather than a consumer, so it must not count as usage. Without this,
+                    // declaring ShowBanner() in a monetization interface flags banner as used even
+                    // when no game code ever calls it.
+                    if (token.StartsWith(".", StringComparison.Ordinal) && DeclaresMethod(text, MethodNameOf(token)))
+                        continue;
+
+                    if (!map.TryGetValue(pair.Key, out var list))
                     {
-                        if (!map.TryGetValue(pair.Key, out var list))
-                        {
-                            list = new List<string>();
-                            map[pair.Key] = list;
-                        }
-                        if (list.Count < 6)
-                            list.Add(path);
+                        list = new List<string>();
+                        map[pair.Key] = list;
                     }
+                    if (list.Count < 6)
+                        list.Add(path);
                 }
 
                 // The helper also supports a project-provided consent answer key; treat it as usage.
@@ -2222,6 +2230,19 @@ namespace Wagenheimer.LevelPlayHelper.Editor
 
             return map;
         }
+
+        static string MethodNameOf(string token)
+        {
+            var name = token.TrimStart('.');
+            var paren = name.IndexOf('(');
+            if (paren >= 0)
+                name = name.Substring(0, paren);
+            var dot = name.LastIndexOf('.');
+            return dot >= 0 ? name.Substring(dot + 1) : name;
+        }
+
+        static bool DeclaresMethod(string text, string method) =>
+            Regex.IsMatch(text, @"\b(?:void|bool|int|float|double|string|Task|Result)\s+" + Regex.Escape(method) + @"\s*\(");
 
         List<HelperInstance> FindHelperInstances()
         {
