@@ -596,13 +596,33 @@ namespace Wagenheimer.LevelPlayHelper
         private void OnRewardedReceived(LevelPlayAdInfo adInfo, LevelPlayReward reward)
         {
             Debug.Log($"[LevelPlayHelper] Reward received: {reward.Amount} {reward.Name}");
-            onRewardSuccessCallback?.Invoke();
+
+            // Consume the callback here so a later OnAdClosed cannot grant a second time.
+            var callback = onRewardSuccessCallback;
+            onRewardSuccessCallback = null;
+
+            callback?.Invoke();
             OnRewardedAdGranted?.Invoke();
         }
 
         private void OnRewardedClosed(LevelPlayAdInfo adInfo)
         {
             Debug.Log("[LevelPlayHelper] Rewarded ad closed.");
+
+#if UNITY_EDITOR
+            // The Editor mock ad does not raise OnAdRewarded in every SDK configuration. Treat a
+            // close with a still-pending callback as earned so Play mode testing is not a dead end.
+            // Editor only: on a device a pending callback means the player skipped the ad.
+            var pending = onRewardSuccessCallback;
+            if (pending != null)
+            {
+                Debug.LogWarning("[LevelPlayHelper] Editor mock rewarded ad closed without the reward callback - granting anyway (Editor only).");
+                onRewardSuccessCallback = null;
+                pending.Invoke();
+                OnRewardedAdGranted?.Invoke();
+            }
+#endif
+
             onRewardSuccessCallback = null;
             LoadRewardedWithRetry();
         }
