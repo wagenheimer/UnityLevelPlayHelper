@@ -91,48 +91,45 @@ That's the entire integration surface for most games.
 
 ## Setup Checklist (Editor Tool)
 
-The package ships an **EditorWindow** that scans your project and reports the state of every integration step, so you don't have to manually re-verify the [LevelPlay integration guide](https://docs.unity.com/en-us/grow/levelplay/) each release.
+The package ships an **EditorWindow** built with UI Toolkit that scans your project and reports the state of every integration step, so you don't have to manually re-verify the [LevelPlay integration guide](https://docs.unity.com/en-us/grow/levelplay/) each release.
 
 **Open it via:**
 - `Tools > Wagenheimer > Level Play Helper > Setup Checklist...`, or
 - The **Open Setup Checklist** button at the top of the `LevelPlayHelper` component's Inspector.
 
-**What it checks automatically:**
+The window groups the checks into eight collapsible sections. Each section shows a progress chip; each row shows a colour-coded status glyph, an explanation, an expandable **details** list (paths, detected values, resolved versions) and a **Docs** button.
 
-| Check | What it verifies |
+| Section | What it verifies |
 |---|---|
-| Ads Mediation package installed | `Unity.Services.LevelPlay` assembly is resolvable |
-| Native dependency resolver installed | EDM4U / Mobile Dependency Resolver present (needed for Android/iOS builds) |
-| `LevelPlayHelper` component present | At least one instance exists in a project prefab or open scene |
-| App Key set | Android and/or iOS App Key field is non-empty, per instance found |
-| At least one Ad Unit ID set | At least one of the six Ad Unit ID fields (3 formats × 2 platforms) is filled |
-| Test Suite disabled | Warns if `Enable Test Suite` is left on — must be off for release builds |
-| Android `AD_ID` permission (API 33+) | `AndroidManifest.xml` declares `com.google.android.gms.permission.AD_ID` when targeting API 33+ |
+| 1 · Package & SDK | Ads Mediation installed and its resolved version (≥ 9.4.0 for the privacy APIs, ≥ 9.5.0 for per-instance ILRD), mediation adapters present, no legacy `Assets/IronSource` copy, Android dependencies served from Maven Central, SDK auto-init not fighting your own init call, `EnableAdapterDebug` / `EnableIntegrationHelper` off |
+| 2 · Native dependencies | EDM4U / UEDM / MDR installed, Android resolve recorded (mediation SDK + adapter + `play-services-ads-identifier`), adapter dependency descriptors present, Gradle template state, iOS CocoaPods, Android `INTERNET` permission |
+| 3 · Helper component | Instance found (with asset/scene paths), reachable at runtime (first enabled build scene, or a prefab under a `Resources` folder), single instance (singleton hygiene) |
+| 4 · Configuration | App Key per platform with placeholder detection, the full Ad Unit ID matrix (3 formats × 2 platforms), every format the project actually calls has IDs, consent flags, ad cadence sanity, Test Suite flag |
+| 5 · Android build | IL2CPP backend, ARM64 in Target Architectures, `AD_ID` permission for API 33+ (custom manifest **or** the SDK's `DeclareAD_IDPermission` **or** the merged `play-services-ads-identifier` AAR), reported min SDK |
+| 6 · iOS build | App Tracking Transparency implemented, `NSUserTrackingUsageDescription` written by a post-build step, SKAdNetwork automation, AdMob app IDs when AdMob mediation is enabled |
+| 7 · Project code integration | Scans your sources (never packages) for rewarded/interstitial/banner usage and readiness guards, interstitial pacing, ILRD consumer, direct privacy API usage, bid floors, and deprecated/removed symbols (`IronSource.Agent`, `com.unity3d.mediation`, `OnImpressionDataReadyEvent`, `SetConsent`, `do_not_sell`, `is_child_directed`, `onApplicationPause`) |
+| 8 · Release validation | The manual items from the production checklist: dashboard app/ad units with active network instances, credentials matching the dashboard, Test Suite validated on a physical device, Development Build while testing, multi-device testing, airplane-mode error handling, iOS privacy manifest, mock-ad limitations |
 
-**Manual reminders shown alongside the automated checks** (each with a Docs button): iOS App Tracking Transparency (ATT) implementation, iOS SKAdNetwork IDs in `Info.plist`, LevelPlay dashboard app/ad-unit configuration, and validating with the on-device Test Suite.
-
-Each row shows a status glyph — **✓ pass**, **! warning**, **✕ fail**, **• manual** — plus a short explanation and a **Docs** button linking straight to the relevant Unity documentation page. Click **Refresh** after making changes to re-run the scan.
+Status legend: **✓ pass**, **! warning**, **✕ fail**, **• manual**, **i info**. The header shows the summary (automated checks passed, fail and warning counts) with a progress bar tinted by the worst status, plus the detected LevelPlay SDK and helper versions. Click **Refresh** after making changes to re-run every check.
 
 ```
-┌─────────────────────────────────────────────────────────┐
-│  LevelPlay Helper - Setup Checklist          [Refresh]  │
-│  5/7 automated checks passing                            │
-├─────────────────────────────────────────────────────────┤
-│  ✓  Ads Mediation package installed                      │
-│     Unity.Services.LevelPlay assembly found.              │
-│                                                            │
-│  ✓  Native dependency resolver installed (EDM4U / MDR)   │
-│     Dependency resolver detected in the project.          │
-│                                                            │
-│  ✓  LevelPlayHelper component present                    │
-│     Found 1 instance(s) in project prefabs/scenes.        │
-│                                                            │
-│  ✕  App Key set (Main)                            [Docs] │
-│     Both Android and iOS App Key fields are empty.        │
-│                                                            │
-│  •  LevelPlay dashboard: App + Ad Units configured [Docs] │
-│     App must exist with active network instances.         │
-└─────────────────────────────────────────────────────────┘
+┌──────────────────────────────────────────────────────────────┐
+│  LevelPlay - Setup Checklist      [Dashboard][Docs][Refresh]  │
+│  LevelPlay SDK 9.5.1 | helper 1.2.0 | checked 14:32:07        │
+│  ✓ All automated checks passed        [24/26 automated]       │
+│  ████████████████████████████████░░                           │
+├──────────────────────────────────────────────────────────────┤
+│  v 1 - Package & SDK                        [7/7]             │
+│    ✓  Ads Mediation package installed                         │
+│       Unity.Services.LevelPlay assembly resolved.             │
+│       details (2)                                             │
+│    !  SDK version meets the privacy / ILRD minimums [Docs]    │
+│       LevelPlay 9.4.x: ILRD still uses the global event.      │
+├──────────────────────────────────────────────────────────────┤
+│  v 8 - Release validation                 [manual]            │
+│    •  Test Suite validated on a real device           [Docs]  │
+│       Mock ads never exercise load/display failures.          │
+└──────────────────────────────────────────────────────────────┘
 ```
 
 ## Custom Inspector
