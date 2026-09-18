@@ -2,7 +2,8 @@
     "name": "Wagenheimer.LevelPlayHelper.Editor",
     "rootNamespace": "Wagenheimer.LevelPlayHelper.Editor",
     "references": [
-        "Wagenheimer.LevelPlayHelper"
+        "Wagenheimer.LevelPlayHelper",
+        "Wagenheimer.PackageHub.Editor"
     ],
     "includePlatforms": [
         "Editor"
