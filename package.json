@@ -21,6 +21,6 @@
   "category": "Services",
   "dependencies": {
     "com.unity.services.levelplay": "9.5.1",
-    "com.wagenheimer.packagehub": "https://github.com/wagenheimer/UnityPackageHub.git#v1.0.0"
+    "com.wagenheimer.packagehub": "https://github.com/wagenheimer/UnityPackageHub.git#v1.0.1"
   }
 }
