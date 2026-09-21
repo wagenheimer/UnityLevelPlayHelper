@@ -282,12 +282,30 @@ namespace Wagenheimer.LevelPlayHelper.Editor
                 .ToList();
             if (pending.Count > 0)
             {
+                var fixable = pending.Where(i => i.Action != null).ToList();
+                if (fixable.Count > 0)
+                {
+                    var fixAll = new Button(() => FixAll(fixable)) { text = $"Fix all ({fixable.Count})" };
+                    fixAll.style.height = 20;
+                    fixAll.style.fontSize = 10;
+                    fixAll.style.marginLeft = 8;
+                    fixAll.style.backgroundColor = new Color(ColPass.r, ColPass.g, ColPass.b, 0.35f);
+                    fixAll.style.color = ColText;
+                    row.Add(fixAll);
+                }
+
                 var copyAll = new Button(() => CopyPendingPrompts(pending)) { text = "Copy pending as prompt" };
                 copyAll.style.height = 20;
                 copyAll.style.fontSize = 10;
                 copyAll.style.marginLeft = 8;
                 row.Add(copyAll);
             }
+
+            var copyReport = new Button(CopyReport) { text = "Copy report" };
+            copyReport.style.height = 20;
+            copyReport.style.fontSize = 10;
+            copyReport.style.marginLeft = 8;
+            row.Add(copyReport);
 
             var track = new VisualElement();
             track.style.height = 6;
@@ -645,6 +663,7 @@ namespace Wagenheimer.LevelPlayHelper.Editor
             CheckHelperInstances();
             CheckHelperReachability();
             CheckHelperDuplicates();
+            CheckDebugOverlay();
 
             BeginSection("4 - Configuration", "Credentials, ad formats and consent written into the helper instance.");
             CheckAppKeys();
@@ -1073,8 +1092,10 @@ namespace Wagenheimer.LevelPlayHelper.Editor
 
             if (!File.Exists(resolverXml))
             {
-                Add(hasGradleOutput ? CheckStatus.Warning : CheckStatus.Warning, "Android native dependencies resolved",
-                    "ProjectSettings/AndroidResolverDependencies.xml not found, so no Android resolve has been recorded. Run Assets > External Dependency Manager > Android Resolver > Resolve (newer MDR resolves automatically on build).");
+                Add(CheckStatus.Warning, "Android native dependencies resolved",
+                    hasGradleOutput
+                        ? "ProjectSettings/AndroidResolverDependencies.xml not found, but Assets/Plugins/Android already has content. Re-run Assets > External Dependency Manager > Android Resolver > Resolve so the resolved set is recorded and reproducible."
+                        : "ProjectSettings/AndroidResolverDependencies.xml not found, so no Android resolve has been recorded. Run Assets > External Dependency Manager > Android Resolver > Resolve (newer MDR resolves automatically on build).");
                 return;
             }
 
@@ -1221,6 +1242,28 @@ namespace Wagenheimer.LevelPlayHelper.Editor
             Add(CheckStatus.Warning, "Single helper instance",
                 $"{helpers.Count} LevelPlayHelper instances found. The component is a singleton (the second one destroys itself), which hides configuration mistakes - keep one, and make sure the surviving one (the prefab you instantiate) holds the credentials.")
                 .Facts.Add("instances: " + helpers.Count);
+        }
+
+        void CheckDebugOverlay()
+        {
+            if (helpers.Count == 0)
+                return;
+
+            var helper = helpers.Select(h => h.Component).FirstOrDefault();
+            if (helper == null)
+                return;
+
+            var so = new SerializedObject(helper);
+            var enabled = GetBool(so, "enableDebugOverlay", true);
+
+            var item = Add(enabled ? CheckStatus.Pass : CheckStatus.Info, "In-game debug overlay",
+                enabled
+                    ? "LevelPlayDebugOverlay auto-attaches in the Editor and Development Builds. It shows SDK state, per-format readiness, load retries and a live ad event log, and can force init/reload and show each format."
+                    : "enableDebugOverlay is off. Turn it on to attach the in-game ADS DBG panel in dev builds; it is compiled out of release builds either way.",
+                "https://docs.unity.com/en-us/grow/levelplay/sdk/unity/test-suite");
+            item.Facts.Add("toggle key: F8 (or the ADS DBG button)");
+            item.Facts.Add("enableDebugOverlay: " + enabled);
+            item.Facts.Add("active in: Editor + Development Builds");
         }
 
         // ---------------------------------------------------------------- section 4: configuration
@@ -1844,6 +1887,81 @@ namespace Wagenheimer.LevelPlayHelper.Editor
             Debug.Log($"[LevelPlayHelper] Copied {pending.Count} pending item(s) as a prompt:\n" + sb);
         }
 
+        /// <summary>
+        /// Runs every pending item that exposes a safe one-click fix, after a confirmation listing
+        /// exactly what will change. Fixes that need real dashboard values or code edits have no
+        /// Action and are intentionally skipped - those stay as "Copy prompt" items.
+        /// </summary>
+        void FixAll(List<CheckResult> fixable)
+        {
+            if (fixable.Count == 0)
+                return;
+
+            var preview = new StringBuilder();
+            foreach (var item in fixable)
+                preview.AppendLine("- " + (string.IsNullOrEmpty(item.ActionLabel) ? item.Title : item.ActionLabel + ": " + item.Title));
+
+            if (!EditorUtility.DisplayDialog("LevelPlay Helper",
+                    $"Apply {fixable.Count} automatic fix(es)?\n\n{preview}\nFixes that need dashboard values or code edits are not included.",
+                    "Fix all", "Cancel"))
+                return;
+
+            var applied = 0;
+            foreach (var item in fixable)
+            {
+                try
+                {
+                    item.Action?.Invoke();
+                    applied++;
+                }
+                catch (Exception e)
+                {
+                    Debug.LogError($"[LevelPlayHelper] Fix '{item.Title}' failed: {e.Message}");
+                }
+            }
+
+            Debug.Log($"[LevelPlayHelper] Applied {applied}/{fixable.Count} automatic fix(es).");
+            RunChecks();
+        }
+
+        /// <summary>
+        /// Copies the whole checklist as Markdown, for issue reports or pasting into an AI agent
+        /// that is not driven by the per-item prompts.
+        /// </summary>
+        void CopyReport()
+        {
+            var sb = new StringBuilder();
+            sb.AppendLine("# LevelPlay setup report");
+            sb.AppendLine();
+            sb.AppendLine("- " + ProjectLabel());
+            sb.AppendLine($"- checked {lastRun:yyyy-MM-dd HH:mm:ss}");
+
+            int autoTotal = sections.Sum(s => s.AutomatedTotal);
+            int autoPass = sections.Sum(s => s.AutomatedPassed);
+            sb.AppendLine($"- automated: {autoPass}/{autoTotal}");
+            sb.AppendLine();
+
+            foreach (var section in sections)
+            {
+                sb.AppendLine($"## {section.Title} ({section.AutomatedPassed}/{section.AutomatedTotal})");
+                sb.AppendLine();
+                foreach (var item in section.Items)
+                {
+                    sb.AppendLine($"- **[{item.Status}]** {item.Title}");
+                    if (!string.IsNullOrEmpty(item.Detail))
+                        sb.AppendLine($"  - {item.Detail}");
+                    foreach (var fact in item.Facts)
+                        sb.AppendLine($"  - {fact}");
+                    if (!string.IsNullOrEmpty(item.DocsUrl))
+                        sb.AppendLine($"  - docs: {item.DocsUrl}");
+                }
+                sb.AppendLine();
+            }
+
+            EditorGUIUtility.systemCopyBuffer = sb.ToString();
+            Debug.Log("[LevelPlayHelper] Setup report copied to the clipboard.");
+        }
+
         /// <summary>Attaches one-click fixes where a fix is safe, and AI prompts everywhere else.</summary>
         void ApplyRemedies()
         {
@@ -1897,6 +2015,10 @@ namespace Wagenheimer.LevelPlayHelper.Editor
             item = Find("Test Suite disabled for release", CheckStatus.Warning);
             if (item != null)
                 Fix(item, "Turn Test Suite off", () => SetHelperBool("enableTestSuite", false));
+
+            item = Find("In-game debug overlay", CheckStatus.Info);
+            if (item != null)
+                Fix(item, "Enable overlay", () => SetHelperBool("enableDebugOverlay", true));
 
             item = Find("Android scripting backend is IL2CPP", CheckStatus.Warning);
             if (item != null)

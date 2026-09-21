@@ -56,6 +56,11 @@ namespace Wagenheimer.LevelPlayHelper.Editor
             EditorGUILayout.LabelField("SDK Initialized", helper.IsSdkInitialized ? "Yes" : "No");
             EditorGUILayout.LabelField("Interstitial Ready", helper.IsInterstitialReady() ? "Yes" : "No");
             EditorGUILayout.LabelField("Rewarded Ready", helper.IsRewardedAdReady() ? "Yes" : "No");
+
+            var overlay = UnityEngine.Object.FindObjectOfType<UI.LevelPlayDebugOverlay>();
+            EditorGUILayout.LabelField("Debug Overlay",
+                overlay != null ? "Active (press F8 in game)"
+                    : helper.enableDebugOverlay ? "Auto in Editor / Dev builds" : "Disabled");
         }
 
         void DrawFooterLinks()

@@ -1,6 +1,6 @@
 {
   "name": "com.wagenheimer.levelplayhelper",
-  "version": "1.7.0",
+  "version": "1.8.0",
   "displayName": "Level Play Helper",
   "description": "Reusable Unity LevelPlay (Unity Ads Mediation) helper: SDK initialization, GDPR consent, interstitial / rewarded / banner management with exponential-backoff retries and impression-level revenue events. Installable via Git URL with editor update notifications.",
   "unity": "2021.3",

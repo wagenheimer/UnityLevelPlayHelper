@@ -73,6 +73,23 @@ namespace Wagenheimer.LevelPlayHelper
 
             Instance = this;
             DontDestroyOnLoad(gameObject);
+
+            if (enableDebugOverlay && (Application.isEditor || Debug.isDebugBuild))
+            {
+                EnsureDebugOverlay();
+            }
+        }
+
+        /// <summary>
+        /// Attaches a <see cref="UI.LevelPlayDebugOverlay"/> to this GameObject when
+        /// <see cref="enableDebugOverlay"/> is true in the Editor or a Development Build.
+        /// </summary>
+        private void EnsureDebugOverlay()
+        {
+            if (GetComponent<UI.LevelPlayDebugOverlay>() == null && FindObjectOfType<UI.LevelPlayDebugOverlay>() == null)
+            {
+                gameObject.AddComponent<UI.LevelPlayDebugOverlay>();
+            }
         }
 
         #endregion
@@ -82,11 +99,26 @@ namespace Wagenheimer.LevelPlayHelper
         /// <summary>Raised after LevelPlay.Init succeeds.</summary>
         public static event Action<LevelPlayConfiguration> OnSdkInitialized;
 
+        /// <summary>Raised when LevelPlay.Init fails (error message).</summary>
+        public static event Action<string> OnSdkInitializeFailed;
+
         /// <summary>Raised when an interstitial is dismissed.</summary>
         public static event Action OnInterstitialClosed;
 
         /// <summary>Raised when a rewarded ad grants its reward.</summary>
         public static event Action OnRewardedAdGranted;
+
+        /// <summary>Raised when an ad format finishes loading: "Interstitial", "Rewarded" or "Banner".</summary>
+        public static event Action<string> OnAdLoaded;
+
+        /// <summary>Raised when an ad format fails to load (format, error message).</summary>
+        public static event Action<string, string> OnAdLoadFailed;
+
+        /// <summary>Raised when an ad format is displayed (format).</summary>
+        public static event Action<string> OnAdDisplayed;
+
+        /// <summary>Raised when an ad format fails to display (format, error message).</summary>
+        public static event Action<string, string> OnAdDisplayFailed;
 
         /// <summary>Ad Unit ID + estimated revenue in USD for every paid impression.</summary>
         public static event Action<string, double> OnAdRevenuePaid;
@@ -123,6 +155,10 @@ namespace Wagenheimer.LevelPlayHelper
         [Tooltip("Launches the LevelPlay Test Suite on device builds after init. DISABLE BEFORE RELEASE.")]
         [SerializeField] private bool enableTestSuite = false;
 
+        [Header("Debug")]
+        [Tooltip("Automatically attaches the in-game LevelPlayDebugOverlay in the Editor and Development Builds. No effect in release builds.")]
+        public bool enableDebugOverlay = true;
+
         public AdsConfiguration AdsConfig => adsConfig;
         public ConsentConfiguration ConsentConfig => consentConfig;
 
@@ -133,6 +169,11 @@ namespace Wagenheimer.LevelPlayHelper
         private const string CONSENT_KEY = "UserConsent";
         private const int MaxRetryAttempt = 6;
         private const float BaseRetryDelaySeconds = 2f;
+
+        // Format names used by the ad lifecycle events / debug overlay.
+        private const string InterstitialFormat = "Interstitial";
+        private const string RewardedFormat = "Rewarded";
+        private const string BannerFormat = "Banner";
 
         private LevelPlayInterstitialAd interstitialAd;
         private LevelPlayRewardedAd rewardedAd;
@@ -147,6 +188,55 @@ namespace Wagenheimer.LevelPlayHelper
         private Action onRewardSuccessCallback;
 
         public bool IsSdkInitialized => isSdkInitialized;
+
+        #endregion
+
+        #region Diagnostics
+
+        // Read-only view of the internal state, surfaced for the in-game debug overlay.
+        // All of these are safe to poll every frame.
+
+        /// <summary>True while the interstitial is downloading.</summary>
+        public bool IsInterstitialLoading => isInterstitialLoading;
+
+        /// <summary>True while the rewarded ad is downloading.</summary>
+        public bool IsRewardedLoading => isRewardedLoading;
+
+        /// <summary>Consecutive interstitial load failures (drives the retry backoff).</summary>
+        public int InterstitialRetryAttempt => interstitialRetryAttempt;
+
+        /// <summary>Consecutive rewarded load failures (drives the retry backoff).</summary>
+        public int RewardedRetryAttempt => rewardedRetryAttempt;
+
+        /// <summary>True when an interstitial Ad Unit ID is configured for the current platform.</summary>
+        public bool HasInterstitialAdUnit => !string.IsNullOrEmpty(InterstitialAdUnitId);
+
+        /// <summary>True when a rewarded Ad Unit ID is configured for the current platform.</summary>
+        public bool HasRewardedAdUnit => !string.IsNullOrEmpty(RewardedAdUnitId);
+
+        /// <summary>True when a banner Ad Unit ID is configured for the current platform.</summary>
+        public bool HasBannerAdUnit => !string.IsNullOrEmpty(BannerAdUnitId);
+
+        /// <summary>True when an App Key is configured for the current platform.</summary>
+        public bool HasAppKey => !string.IsNullOrEmpty(AppKey);
+
+        /// <summary>True once the banner object has been created (loaded on demand).</summary>
+        public bool IsBannerCreated => bannerAd != null;
+
+        /// <summary>True when the LevelPlay SDK can serve ads on this platform (Editor counts as supported).</summary>
+        public bool IsAdsSupported => AdsSupported;
+
+        /// <summary>App Key resolved for the current platform (empty when unset).</summary>
+        public string AppKeyResolved => AppKey;
+
+        /// <summary>Interstitial Ad Unit ID resolved for the current platform.</summary>
+        public string InterstitialAdUnitIdResolved => InterstitialAdUnitId;
+
+        /// <summary>Rewarded Ad Unit ID resolved for the current platform.</summary>
+        public string RewardedAdUnitIdResolved => RewardedAdUnitId;
+
+        /// <summary>Banner Ad Unit ID resolved for the current platform.</summary>
+        public string BannerAdUnitIdResolved => BannerAdUnitId;
 
         #endregion
 
@@ -303,6 +393,7 @@ namespace Wagenheimer.LevelPlayHelper
         private void OnInitFailed(LevelPlayInitError error)
         {
             Debug.LogError($"[LevelPlayHelper] LevelPlay initialization failed: {error.ErrorMessage}. Retrying in 10s...");
+            OnSdkInitializeFailed?.Invoke(error.ErrorMessage);
             Invoke(nameof(Initialize), 10f);
         }
 
@@ -465,6 +556,23 @@ namespace Wagenheimer.LevelPlayHelper
             return false;
         }
 
+        /// <summary>
+        /// Clears the loading flags and requests a fresh load of every configured ad format.
+        /// Intended for the in-game debug overlay (e.g. after a stuck load or a network change).
+        /// </summary>
+        public void ForceReloadAds()
+        {
+            isInterstitialLoading = false;
+            isRewardedLoading = false;
+            LoadAllAds();
+        }
+
+        /// <summary>
+        /// Opens the LevelPlay Test Suite on device. The "is_test_suite" metadata must have been
+        /// set before initialization, i.e. <see cref="enableTestSuite"/> has to be enabled in the Inspector.
+        /// </summary>
+        public void LaunchTestSuite() => LevelPlay.LaunchTestSuite();
+
         #endregion
 
         #region Banner
@@ -529,6 +637,7 @@ namespace Wagenheimer.LevelPlayHelper
             Debug.Log("[LevelPlayHelper] Interstitial loaded.");
             isInterstitialLoading = false;
             interstitialRetryAttempt = 0;
+            OnAdLoaded?.Invoke(InterstitialFormat);
         }
 
         private void OnInterstitialLoadFailed(LevelPlayAdError error)
@@ -538,15 +647,20 @@ namespace Wagenheimer.LevelPlayHelper
 
             float delay = GetRetryDelay(interstitialRetryAttempt);
             Debug.LogWarning($"[LevelPlayHelper] Interstitial load failed ({error.ErrorCode}: {error.ErrorMessage}). Retrying in {delay:F0}s.");
+            OnAdLoadFailed?.Invoke(InterstitialFormat, error.ErrorMessage);
             Invoke(nameof(LoadInterstitialWithRetry), delay);
         }
 
-        private void OnInterstitialDisplayed(LevelPlayAdInfo adInfo) =>
+        private void OnInterstitialDisplayed(LevelPlayAdInfo adInfo)
+        {
             Debug.Log("[LevelPlayHelper] Interstitial displayed.");
+            OnAdDisplayed?.Invoke(InterstitialFormat);
+        }
 
         private void OnInterstitialDisplayFailed(LevelPlayAdInfo adInfo, LevelPlayAdError error)
         {
             Debug.LogError($"[LevelPlayHelper] Interstitial display failed: {error.ErrorMessage}");
+            OnAdDisplayFailed?.Invoke(InterstitialFormat, error.ErrorMessage);
             LoadInterstitialWithRetry();
         }
 
@@ -571,6 +685,7 @@ namespace Wagenheimer.LevelPlayHelper
             Debug.Log("[LevelPlayHelper] Rewarded ad loaded.");
             isRewardedLoading = false;
             rewardedRetryAttempt = 0;
+            OnAdLoaded?.Invoke(RewardedFormat);
         }
 
         private void OnRewardedLoadFailed(LevelPlayAdError error)
@@ -580,15 +695,20 @@ namespace Wagenheimer.LevelPlayHelper
 
             float delay = GetRetryDelay(rewardedRetryAttempt);
             Debug.LogWarning($"[LevelPlayHelper] Rewarded load failed ({error.ErrorCode}: {error.ErrorMessage}). Retrying in {delay:F0}s.");
+            OnAdLoadFailed?.Invoke(RewardedFormat, error.ErrorMessage);
             Invoke(nameof(LoadRewardedWithRetry), delay);
         }
 
-        private void OnRewardedDisplayed(LevelPlayAdInfo adInfo) =>
+        private void OnRewardedDisplayed(LevelPlayAdInfo adInfo)
+        {
             Debug.Log("[LevelPlayHelper] Rewarded ad displayed.");
+            OnAdDisplayed?.Invoke(RewardedFormat);
+        }
 
         private void OnRewardedDisplayFailed(LevelPlayAdInfo adInfo, LevelPlayAdError error)
         {
             Debug.LogError($"[LevelPlayHelper] Rewarded display failed: {error.ErrorMessage}");
+            OnAdDisplayFailed?.Invoke(RewardedFormat, error.ErrorMessage);
             onRewardSuccessCallback = null;
             LoadRewardedWithRetry();
         }
@@ -636,23 +756,31 @@ namespace Wagenheimer.LevelPlayHelper
 
         #region Banner Callbacks
 
-        private void OnBannerLoaded(LevelPlayAdInfo adInfo) =>
+        private void OnBannerLoaded(LevelPlayAdInfo adInfo)
+        {
             Debug.Log("[LevelPlayHelper] Banner loaded.");
+            OnAdLoaded?.Invoke(BannerFormat);
+        }
 
         private void OnBannerLoadFailed(LevelPlayAdError error)
         {
             Debug.LogWarning($"[LevelPlayHelper] Banner load failed: {error.ErrorMessage}. Retrying in 60s.");
+            OnAdLoadFailed?.Invoke(BannerFormat, error.ErrorMessage);
             Invoke(nameof(BannerRetryLoad), 60f);
         }
 
         private void BannerRetryLoad() => bannerAd?.LoadAd();
 
-        private void OnBannerDisplayed(LevelPlayAdInfo adInfo) =>
+        private void OnBannerDisplayed(LevelPlayAdInfo adInfo)
+        {
             Debug.Log("[LevelPlayHelper] Banner displayed.");
+            OnAdDisplayed?.Invoke(BannerFormat);
+        }
 
         private void OnBannerDisplayFailed(LevelPlayAdInfo adInfo, LevelPlayAdError error)
         {
             Debug.LogError($"[LevelPlayHelper] Banner display failed: {error.ErrorMessage}");
+            OnAdDisplayFailed?.Invoke(BannerFormat, error.ErrorMessage);
             Invoke(nameof(BannerRetryLoad), 60f);
         }
 
