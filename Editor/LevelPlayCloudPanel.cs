@@ -43,6 +43,7 @@ namespace Wagenheimer.LevelPlayHelper.Editor
         VisualElement createHost;
         VisualElement createSection;
         VisualElement networksHost;
+        VisualElement verifyHost;
         VisualElement logHost;
         readonly List<string> logLines = new List<string>();
         bool appsFetched;
@@ -80,17 +81,18 @@ namespace Wagenheimer.LevelPlayHelper.Editor
             body.Clear();
 
             BuildCredentials();
+            BuildVerify();
             BuildApplications();
             BuildCreateApp();
             BuildAdUnits();
             BuildNetworks();
             BuildActivity();
-            Log("Cloud tab ready. Connect, then Fetch applications.");
+            Log("Cloud tab ready. Connect, then press Verify configuration.");
         }
 
         void BuildCredentials()
         {
-            AddSection("API credentials",
+            AddSection("Connect - API credentials",
                 "Account-level secrets from LevelPlay > My Account > API. Stored in EditorPrefs on this machine only - never written to the project or logged.");
 
             secretField = CredentialField("Secret Key");
@@ -119,9 +121,119 @@ namespace Wagenheimer.LevelPlayHelper.Editor
             UpdateStoredLabel();
         }
 
+        void BuildVerify()
+        {
+            AddSection("Verify configuration (API)",
+                "The one-click health check: confirms, against your LevelPlay account, that every App Key and Ad Unit ID on the helper exists, is not paused, uses the right format and has an active network. " +
+                "It fetches the account state itself, so it is safe to press at any time.");
+
+            body.Add(ButtonRow(Action("Verify configuration", VerifyAsync, true)));
+
+            verifyHost = new VisualElement();
+            verifyHost.style.marginTop = 6;
+            body.Add(verifyHost);
+        }
+
+        /// <summary>
+        /// One-click health check: refresh the account state, then verify every configured
+        /// credential against it and render the report.
+        /// </summary>
+        async void VerifyAsync()
+        {
+            if (!LevelPlayApiCredentials.HasCredentials)
+            {
+                SetStatus("Store the API credentials first (Secret Key + Refresh Token).", ColFail);
+                Log("Verify: aborted - no API credentials.");
+                return;
+            }
+
+            SetStatus("Verifying against the API...", ColAccent);
+            Log("Verify: starting.");
+
+            var (appsResult, list) = await LevelPlayApiClient.GetApplicationsAsync();
+            if (!appsResult.Ok)
+            {
+                SetStatus("Verify failed while listing applications: " + appsResult.Error, ColFail);
+                Log("Verify: listing applications failed - " + appsResult.Error);
+                return;
+            }
+
+            apps.Clear();
+            apps.AddRange(list);
+            LevelPlayCloudCache.SetApps(list);
+            appsFetched = true;
+            networksJustEnabled = false;
+            androidApp = MatchApp("Android");
+            iosApp = MatchApp("iOS");
+            RenderApps();
+            UpdateCreateVisibility();
+            Log($"Verify: {apps.Count} application(s) on the account.");
+
+            foreach (var target in new[] { ("android", androidApp), ("ios", iosApp) })
+            {
+                var app = target.Item2;
+                if (app == null) continue;
+
+                var (unitsResult, units) = await LevelPlayApiClient.GetAdUnitsAsync(app.appKey);
+                if (!unitsResult.Ok)
+                {
+                    Log($"Verify: ad units of {app.appName} failed - {unitsResult.Error}");
+                    continue;
+                }
+
+                unitsByApp[target.Item1] = units;
+                LevelPlayCloudCache.SetUnits(app.appKey, units);
+                Log($"Verify: {app.appName} has {units.Count} ad unit(s).");
+            }
+
+            RenderUnits();
+            RenderNetworks();
+
+            var helper = LevelPlayHelperLocator.FindPreferred();
+            var report = LevelPlayVerifier.Verify(helper != null ? new SerializedObject(helper) : null);
+            RenderVerifyReport(report);
+
+            Log($"Verify: {report.Errors} error(s), {report.Warnings} warning(s), {report.OkCount} ok.");
+            SetStatus(report.Errors > 0
+                    ? $"Verification found {report.Errors} error(s) - see the report above."
+                    : report.Warnings > 0
+                        ? "Verification passed with warnings - see the report above."
+                        : "Verification passed: everything is configured and active.",
+                report.Errors > 0 ? ColFail : report.Warnings > 0 ? ColWarn : ColOk);
+        }
+
+        void RenderVerifyReport(LevelPlayVerifier.Report report)
+        {
+            if (verifyHost == null || report == null) return;
+
+            verifyHost.Clear();
+
+            var banner = new Label(report.Errors > 0
+                ? $"FAIL - {report.Errors} error(s), {report.Warnings} warning(s)"
+                : report.Warnings > 0
+                    ? $"PASS with {report.Warnings} warning(s)"
+                    : $"PASS - {report.OkCount} check(s) OK, nothing to fix");
+            banner.style.fontSize = 12;
+            banner.style.unityFontStyleAndWeight = FontStyle.Bold;
+            banner.style.color = report.Errors > 0 ? ColFail : report.Warnings > 0 ? ColWarn : ColOk;
+            banner.style.whiteSpace = WhiteSpace.Normal;
+            verifyHost.Add(banner);
+
+            foreach (var finding in report.Findings)
+            {
+                var color = finding.Level == LevelPlayVerifier.Level.Error ? ColFail
+                    : finding.Level == LevelPlayVerifier.Level.Warning ? ColWarn
+                    : ColOk;
+                var glyph = finding.Level == LevelPlayVerifier.Level.Error ? "\u2715"
+                    : finding.Level == LevelPlayVerifier.Level.Warning ? "!"
+                    : "\u2713";
+                verifyHost.Add(NetworkRow(finding.Text, color, glyph));
+            }
+        }
+
         void BuildApplications()
         {
-            AddSection("Applications",
+            AddSection("1 - Applications",
                 "Fetch your apps, then apply the per-platform App Key to the helper prefab.");
 
             body.Add(ButtonRow(Action("Fetch applications", FetchApplicationsAsync, true)));
@@ -140,7 +252,7 @@ namespace Wagenheimer.LevelPlayHelper.Editor
             createSection = new VisualElement();
             createSection.style.display = DisplayStyle.None;
 
-            createSection.Add(SectionHeader("Create application",
+            createSection.Add(SectionHeader("- Create application",
                 "No app found on the account: create it here - either not published yet (name + platform) or already on the store (store URL + taxonomy)."));
 
             var mode = new Toggle("Already published on the store") { value = createLiveApp };
@@ -210,7 +322,7 @@ namespace Wagenheimer.LevelPlayHelper.Editor
 
         void BuildAdUnits()
         {
-            AddSection("Ad units",
+            AddSection("2 - Ad units",
                 "Fetch the ad units of each app and apply the IDs to the helper prefab. Create the missing formats in one click.");
 
             body.Add(ButtonRow(
@@ -429,7 +541,7 @@ namespace Wagenheimer.LevelPlayHelper.Editor
 
         void BuildActivity()
         {
-            AddSection("Activity",
+            AddSection("Activity log",
                 "Everything the Cloud tab does, in order. Copy it into a bug report if something fails.");
 
             var scroll = new ScrollView(ScrollViewMode.Vertical);

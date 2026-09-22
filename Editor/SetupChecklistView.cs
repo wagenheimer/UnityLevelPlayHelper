@@ -1568,102 +1568,44 @@ namespace Wagenheimer.LevelPlayHelper.Editor
         }
 
         /// <summary>
-        /// Cross-checks the credentials on the helper against the account state pulled by the Cloud
-        /// tab: the App Key must be an app on the account, every Ad Unit ID must belong to that app
-        /// with the matching format, must not be paused, and must have at least one active network.
-        /// This is what catches the runtime "invalid ad unit id" that no offline check can see.
+        /// Cross-checks the credentials on the helper against the account state. Delegates to
+        /// <see cref="LevelPlayVerifier"/> so the Cloud tab's Verify button and this row always
+        /// report identical findings - this is what catches the runtime "invalid ad unit id".
         /// </summary>
         void CheckCloudConsistency()
         {
             if (helpers.Count == 0)
                 return;
 
-            if (!LevelPlayCloudCache.HasData)
+            var report = LevelPlayVerifier.Verify(new SerializedObject(helpers[0].Component));
+
+            if (!report.HasAccountData)
             {
                 Add(CheckStatus.Info, "Dashboard cross-check",
-                    "Not verified against the dashboard yet. Open Setup & Config > Cloud (API), fetch applications and ad units, then refresh here.",
+                    "Not verified against the dashboard yet. Open Setup & Config > Cloud (API) and press Verify configuration, then refresh here.",
                     null);
                 return;
             }
 
-            var so = new SerializedObject(helpers[0].Component);
-
-            var problems = new List<string>();
-            var warnings = new List<string>();
-            var verified = 0;
-
-            foreach (var platform in new[] { ("Android", "android"), ("iOS", "ios") })
-            {
-                var label = platform.Item1;
-                var prefix = platform.Item2;
-
-                var appKey = GetString(so, prefix + "AppKey");
-                if (string.IsNullOrEmpty(appKey)) continue;
-
-                var app = LevelPlayCloudCache.FindAppByKey(appKey);
-                if (app == null)
-                {
-                    problems.Add($"{label}: App Key {Mask(appKey)} is not an application on this account.");
-                    continue;
-                }
-
-                var units = LevelPlayCloudCache.UnitsFor(appKey);
-                if (units == null)
-                {
-                    warnings.Add($"{label}: ad units of {app.appName} were not fetched (fetch them in the Cloud tab).");
-                    continue;
-                }
-
-                foreach (var format in new[] { "rewarded", "interstitial", "banner" })
-                {
-                    var id = GetString(so, FormatProperty(prefix, format));
-
-                    if (!string.IsNullOrEmpty(id))
-                    {
-                        var unit = units.FirstOrDefault(u => string.Equals(u.mediationAdUnitId, id, StringComparison.OrdinalIgnoreCase));
-                        if (unit == null)
-                        {
-                            problems.Add($"{label} {format}: Ad Unit ID {Mask(id)} does not belong to {app.appName} - the SDK rejects it as 'invalid ad unit id'.");
-                        }
-                        else
-                        {
-                            verified++;
-                            if (unit.isPaused) warnings.Add($"{label} {format}: the ad unit is PAUSED in the dashboard - it will not fill.");
-                            if (!string.Equals(unit.adFormat, format, StringComparison.OrdinalIgnoreCase))
-                                problems.Add($"{label} {format}: the ID is registered as '{unit.adFormat}' in the dashboard but used as '{format}'.");
-                        }
-                    }
-
-                    var networks = LevelPlayCloudCache.ActiveNetworks(app, format);
-                    if (networks == null || networks.All(string.IsNullOrEmpty))
-                        warnings.Add($"{label} {format}: no active network on the ad unit - no demand, it will not fill.");
-                }
-            }
-
-            var status = problems.Count > 0 ? CheckStatus.Fail
-                : warnings.Count > 0 ? CheckStatus.Warning
+            var status = report.Errors > 0 ? CheckStatus.Fail
+                : report.Warnings > 0 ? CheckStatus.Warning
                 : CheckStatus.Pass;
 
-            var detail = problems.Count > 0
-                ? "The local credentials do not match the account: those ad units fail or never fill on device."
-                : warnings.Count > 0
+            var detail = report.Errors > 0
+                ? "The credentials do not match the account: those ad units fail or never fill on device."
+                : report.Warnings > 0
                     ? "The credentials match the account, but something below will keep ads from filling."
-                    : $"Every configured App Key and Ad Unit ID matches the account ({verified} checked).";
+                    : $"Everything matches the account ({report.OkCount} check(s) passed).";
 
             var item = Add(status, "Dashboard cross-check", detail, "https://platform.ironsrc.com/");
             item.Facts.Add("fetched at: " + LevelPlayCloudCache.LastFetchUtc.ToLocalTime().ToString("yyyy-MM-dd HH:mm"));
-            foreach (var problem in problems) item.Facts.Add("error: " + problem);
-            foreach (var warning in warnings) item.Facts.Add("warning: " + warning);
-        }
 
-        static string FormatProperty(string prefix, string format)
-        {
-            switch (format)
+            foreach (var finding in report.Findings)
             {
-                case "rewarded": return prefix + "RewardedAdUnitId";
-                case "interstitial": return prefix + "InterstitialAdUnitId";
-                case "banner": return prefix + "BannerAdUnitId";
-                default: return prefix + "AdUnitId";
+                var prefix = finding.Level == LevelPlayVerifier.Level.Error ? "error: "
+                    : finding.Level == LevelPlayVerifier.Level.Warning ? "warning: "
+                    : "ok: ";
+                item.Facts.Add(prefix + finding.Text);
             }
         }
 
