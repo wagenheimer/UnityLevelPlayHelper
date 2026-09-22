@@ -151,6 +151,8 @@ namespace Wagenheimer.LevelPlayHelper.Editor
             public string appConfig1;
             public string instanceConfig1;
             public bool isLive;
+            /// <summary>Instance-level rate. Mandatory for non-bidding instances (ERR-1216).</summary>
+            public float rate;
         }
 
         // ------------------------------------------------------------ auth

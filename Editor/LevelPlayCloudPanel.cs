@@ -43,8 +43,11 @@ namespace Wagenheimer.LevelPlayHelper.Editor
         VisualElement createHost;
         VisualElement createSection;
         VisualElement networksHost;
+        VisualElement logHost;
+        readonly List<string> logLines = new List<string>();
         bool appsFetched;
         bool networksJustEnabled;
+        float instanceRate = 0.01f;
         TextField secretField;
         TextField refreshField;
 
@@ -81,6 +84,8 @@ namespace Wagenheimer.LevelPlayHelper.Editor
             BuildCreateApp();
             BuildAdUnits();
             BuildNetworks();
+            BuildActivity();
+            Log("Cloud tab ready. Connect, then Fetch applications.");
         }
 
         void BuildCredentials()
@@ -161,6 +166,48 @@ namespace Wagenheimer.LevelPlayHelper.Editor
             createSection.style.display = appsFetched && apps.Count == 0 ? DisplayStyle.Flex : DisplayStyle.None;
         }
 
+        static VisualElement NetworkRow(string text, Color color, string glyph)
+        {
+            var row = new VisualElement();
+            row.style.flexDirection = FlexDirection.Row;
+            row.style.marginTop = 1;
+            row.style.flexShrink = 0;
+
+            if (!string.IsNullOrEmpty(glyph))
+            {
+                var dot = new Label(glyph);
+                dot.style.width = 14;
+                dot.style.color = color;
+                row.Add(dot);
+            }
+            else
+            {
+                var pad = new VisualElement();
+                pad.style.width = 14;
+                row.Add(pad);
+            }
+
+            var label = new Label(text);
+            label.style.fontSize = 10.5f;
+            label.style.color = color;
+            row.Add(label);
+
+            return row;
+        }
+
+        /// <summary>Ad Unit ID configured on the helper prefab for that platform+format, or "".</summary>
+        static string HelperAdUnitId(string prefix, string format)
+        {
+            var property = PropertyFor(prefix, format);
+            if (property == null) return "";
+
+            var helper = LevelPlayHelperLocator.FindPreferred();
+            if (helper == null) return "";
+
+            var prop = new SerializedObject(helper).FindProperty(property);
+            return prop != null ? prop.stringValue : "";
+        }
+
         void BuildAdUnits()
         {
             AddSection("Ad units",
@@ -186,14 +233,30 @@ namespace Wagenheimer.LevelPlayHelper.Editor
                 "Only formats showing \"no active networks\" need the button.");
 
             var note = new Label(
-                "What the button does: it creates/activates the default pair (ironSource + UnityAds) for every ad unit of the selected apps, " +
-                "on the LevelPlay dashboard.\n" +
+                "What the button does, for every format the game uses (one with an Ad Unit ID configured on the helper): it activates the existing default instance " +
+                "and adds the default pair (ironSource + UnityAds) when it is missing, on the LevelPlay dashboard, at the instance rate below.\n" +
                 "Apps not live in the store: the platform creates the instances as inactive; they activate once the app is published.");
             note.style.fontSize = 10;
             note.style.color = ColDim;
             note.style.whiteSpace = WhiteSpace.Normal;
             note.style.marginBottom = 4;
             body.Add(note);
+
+            // The API requires an instance-level rate for non-bidding instances (ERR-1216).
+            var rateField = new FloatField("Instance rate (eCPM)") { value = instanceRate };
+            rateField.style.flexShrink = 0;
+            rateField.style.maxWidth = 340;
+            rateField.RegisterValueChangedCallback(e => instanceRate = Mathf.Clamp(e.newValue, 0.01f, 3000f));
+            body.Add(rateField);
+
+            var rateHint = new Label(
+                "The rate is mandatory for non-bidding instances - without it the API answers HTTP 400 (ERR-1216) and nothing is created. " +
+                "0.01 is the minimum; raise it once you have real eCPM data.");
+            rateHint.style.fontSize = 10;
+            rateHint.style.color = ColDim;
+            rateHint.style.whiteSpace = WhiteSpace.Normal;
+            rateHint.style.marginBottom = 4;
+            body.Add(rateHint);
 
             body.Add(ButtonRow(Action("Enable default networks", EnableDefaultNetworks, true)));
 
@@ -227,29 +290,24 @@ namespace Wagenheimer.LevelPlayHelper.Editor
 
                 foreach (var format in Formats)
                 {
+                    // Only formats the game actually uses (an Ad Unit ID is configured locally)
+                    // matter here - a banner row is noise when no banner ID exists.
+                    if (string.IsNullOrEmpty(HelperAdUnitId(prefix, format)))
+                    {
+                        networksHost.Add(NetworkRow(format + ": not used by the game (no Ad Unit ID configured) - skipped", ColDim, ""));
+                        continue;
+                    }
+
                     var networks = LevelPlayCloudCache.ActiveNetworks(app, format);
                     var active = networks != null && networks.Any(n => !string.IsNullOrEmpty(n));
                     if (!active) anyMissing = true;
 
-                    var row = new VisualElement();
-                    row.style.flexDirection = FlexDirection.Row;
-                    row.style.marginTop = 1;
-                    row.style.flexShrink = 0;
-
-                    var dot = new Label(active ? "\u25CF" : "\u25CB");
-                    dot.style.width = 14;
-                    dot.style.color = active ? ColOk : ColFail;
-                    row.Add(dot);
-
-                    var text = active
-                        ? $"{format}: {string.Join(", ", networks.Where(n => !string.IsNullOrEmpty(n)))}"
-                        : $"{format}: no active networks - this format will NOT fill";
-                    var label = new Label(text);
-                    label.style.fontSize = 10.5f;
-                    label.style.color = active ? ColText : ColFail;
-                    row.Add(label);
-
-                    networksHost.Add(row);
+                    networksHost.Add(NetworkRow(
+                        active
+                            ? $"{format}: {string.Join(", ", networks.Where(n => !string.IsNullOrEmpty(n)))}"
+                            : $"{format}: no active networks - this format will NOT fill",
+                        active ? ColText : ColFail,
+                        active ? "\u25CF" : "\u25CB"));
                 }
 
                 if (anyMissing)
@@ -351,6 +409,57 @@ namespace Wagenheimer.LevelPlayHelper.Editor
             statusLabel.style.color = color;
         }
 
+        /// <summary>Appends a line to the activity log: every operation reports what it is doing.</summary>
+        void Log(string message)
+        {
+            var line = DateTime.Now.ToString("HH:mm:ss") + "  " + message;
+            logLines.Add(line);
+            if (logLines.Count > 300) logLines.RemoveAt(0);
+
+            if (logHost == null) return;
+
+            var label = new Label(line);
+            label.style.fontSize = 10;
+            label.style.color = ColDim;
+            label.style.whiteSpace = WhiteSpace.Normal;
+            logHost.Add(label);
+
+            while (logHost.childCount > 120) logHost.RemoveAt(0);
+        }
+
+        void BuildActivity()
+        {
+            AddSection("Activity",
+                "Everything the Cloud tab does, in order. Copy it into a bug report if something fails.");
+
+            var scroll = new ScrollView(ScrollViewMode.Vertical);
+            scroll.style.maxHeight = 170;
+            scroll.style.backgroundColor = new Color(0f, 0f, 0f, 0.20f);
+            scroll.style.paddingTop = 4;
+            scroll.style.paddingBottom = 4;
+            scroll.style.paddingLeft = 6;
+            scroll.style.paddingRight = 6;
+
+            logHost = scroll.contentContainer;
+            foreach (var line in logLines)
+            {
+                var label = new Label(line);
+                label.style.fontSize = 10;
+                label.style.color = ColDim;
+                label.style.whiteSpace = WhiteSpace.Normal;
+                logHost.Add(label);
+            }
+
+            body.Add(scroll);
+            body.Add(ButtonRow(Action("Copy log", CopyLog)));
+        }
+
+        void CopyLog()
+        {
+            EditorGUIUtility.systemCopyBuffer = string.Join("\n", logLines);
+            Log("Log copied to the clipboard.");
+        }
+
         void UpdateStoredLabel()
         {
             if (storedLabel == null) return;
@@ -399,6 +508,7 @@ namespace Wagenheimer.LevelPlayHelper.Editor
             var result = await LevelPlayApiClient.AuthenticateAsync(LevelPlayApiCredentials.SecretKey, LevelPlayApiCredentials.RefreshToken);
             SetStatus(result.Ok ? "Connected. Bearer token acquired (valid 24h)." : "Auth failed: " + result.Error,
                 result.Ok ? ColOk : ColFail);
+            Log(result.Ok ? "Auth OK (bearer token acquired)." : "Auth failed: " + result.Error);
         }
 
         // ------------------------------------------------------------ applications
@@ -426,6 +536,7 @@ namespace Wagenheimer.LevelPlayHelper.Editor
             RenderNetworks();
             UpdateCreateVisibility();
             SetStatus($"Fetched {apps.Count} application(s).", ColOk);
+            Log($"Fetched {apps.Count} application(s): " + string.Join(", ", apps.Select(a => $"{a.appName} [{a.platform}/{a.appKey}]")));
         }
 
         LevelPlayApiClient.AppDto MatchApp(string platform)
@@ -522,6 +633,7 @@ namespace Wagenheimer.LevelPlayHelper.Editor
             SetStatus(writes > 0
                 ? $"Applied {writes} App Key(s) to the helper prefab."
                 : "No application selected.", writes > 0 ? ColOk : ColWarn);
+            Log(writes > 0 ? $"Applied {writes} App Key(s) to the helper prefab." : "Apply App Keys: no application selected.");
         }
 
         // ------------------------------------------------------------ create application
@@ -633,6 +745,7 @@ namespace Wagenheimer.LevelPlayHelper.Editor
 
                 unitsByApp[prefix] = units;
                 LevelPlayCloudCache.SetUnits(app.appKey, units);
+                Log($"Ad units for {app.appName}: {units.Count} (" + string.Join(", ", units.Select(u => u.adFormat + "/" + u.mediationAdUnitId)) + ")");
             }
 
             RenderUnits();
@@ -726,6 +839,7 @@ namespace Wagenheimer.LevelPlayHelper.Editor
             SetStatus(writes > 0
                 ? $"Applied {writes} Ad Unit ID(s) to the helper prefab."
                 : "No ad units to apply (fetch them first).", writes > 0 ? ColOk : ColWarn);
+            Log(writes > 0 ? $"Applied {writes} Ad Unit ID(s) to the helper prefab." : "Apply Ad Unit IDs: nothing to apply.");
         }
 
         static string PropertyFor(string prefix, string format)
@@ -748,42 +862,62 @@ namespace Wagenheimer.LevelPlayHelper.Editor
             if (targets.Count == 0)
             {
                 SetStatus("Fetch ad units first so we know what is missing.", ColWarn);
+                Log("Create ad units: skipped - fetch ad units first.");
                 return;
             }
 
-            var total = targets.Sum(t => MissingFormats(unitsByApp[t.Item1]).Count);
-            if (total == 0)
-            {
-                SetStatus("Nothing to create: every format already exists.", ColOk);
-                return;
-            }
-
-            if (!EditorUtility.DisplayDialog("Create ad units",
-                $"Create {total} missing ad unit(s) on the LevelPlay dashboard? This writes to your account.",
-                "Create", "Cancel"))
-                return;
-
+            var plan = new List<(string prefix, LevelPlayApiClient.AppDto app, List<string> formats)>();
             foreach (var (prefix, app) in targets)
             {
                 var missing = MissingFormats(unitsByApp[prefix]);
-                if (missing.Count == 0) continue;
+                if (missing.Count > 0) plan.Add((prefix, app, missing));
+            }
 
-                var requests = missing.Select(f => new LevelPlayApiClient.AdUnitRequest
+            var total = plan.Sum(p => p.formats.Count);
+            if (total == 0)
+            {
+                SetStatus("Nothing to create: every format already exists.", ColOk);
+                Log("Create ad units: nothing to do, every format already exists.");
+                return;
+            }
+
+            var details = string.Join("\n", plan.Select(p =>
+                $"- {(p.prefix == "android" ? "Android" : "iOS")} / {p.app.appName}: {string.Join(", ", p.formats)}"));
+
+            if (!EditorUtility.DisplayDialog("Create ad units",
+                $"Create {total} ad unit(s) on the LevelPlay dashboard?\n\n{details}\n\nThis writes to your account.",
+                "Create", "Cancel"))
+                return;
+
+            Log($"Create ad units: starting ({total} unit(s)).");
+            foreach (var (prefix, app, formats) in plan)
+                Log($"  - {(prefix == "android" ? "Android" : "iOS")} / {app.appName} [{app.appKey}]: {string.Join(", ", formats)}");
+
+            foreach (var (prefix, app, formats) in plan)
+            {
+                var requests = formats.Select(f => new LevelPlayApiClient.AdUnitRequest
                 {
-                    mediationAdUnitName = f + "-1",
+                    mediationAdUnitName = "LevelPlayHelper-" + f,
                     adFormat = f,
                     reward = f == "rewarded" ? new LevelPlayApiClient.Reward { rewardItemName = "Virtual Item", rewardAmount = 1 } : null
-                });
+                }).ToList();
 
+                Log($"POST ad units -> {app.appName}: {string.Join(", ", formats)}");
                 var result = await LevelPlayApiClient.CreateAdUnitsAsync(app.appKey, requests);
+
                 if (!result.Ok)
                 {
+                    Log($"  FAILED for {app.appName}: {result.Error}");
                     SetStatus($"Create failed for {app.appName}: {result.Error}", ColFail);
                     return;
                 }
+
+                Log($"  OK for {app.appName}: {result.Json}");
             }
 
-            SetStatus("Ad units created. Fetch ad units again to pull the new IDs.", ColOk);
+            SetStatus("Ad units created. Re-fetching to show the new IDs...", ColAccent);
+            Log("Create ad units: done - re-fetching ad units.");
+            FetchAdUnitsAsync();
         }
 
         // ------------------------------------------------------------ networks
@@ -797,12 +931,30 @@ namespace Wagenheimer.LevelPlayHelper.Editor
             if (targets.Count == 0)
             {
                 SetStatus("Fetch ad units first.", ColWarn);
+                Log("Enable networks: skipped - fetch ad units first.");
+                return;
+            }
+
+            var plan = new List<string>();
+            foreach (var (prefix, app) in targets)
+            {
+                var formats = Formats.Where(f => !string.IsNullOrEmpty(HelperAdUnitId(prefix, f))).ToList();
+                if (formats.Count > 0)
+                    plan.Add($"- {(prefix == "android" ? "Android" : "iOS")} / {app.appName}: {string.Join(", ", formats)}");
+            }
+
+            if (plan.Count == 0)
+            {
+                SetStatus("No format has an Ad Unit ID configured on the helper - nothing to enable.", ColWarn);
+                Log("Enable networks: skipped - no Ad Unit ID configured on the helper.");
                 return;
             }
 
             if (!EditorUtility.DisplayDialog("Enable default networks",
-                "Add the default networks (ironSource + UnityAds) to every ad unit of the selected apps, on the LevelPlay dashboard?\n\n" +
-                "Use this for the formats that currently show \"no active networks\" - an ad unit with no active network has no demand and never fills.\n\n" +
+                "Activate/add the default networks (ironSource + UnityAds) for the formats below, on the LevelPlay dashboard?\n\n" +
+                string.Join("\n", plan) + "\n\n" +
+                $"Instance rate: {instanceRate:0.####}\n" +
+                "The rate is mandatory for non-bidding instances - without it the API answers HTTP 400 (ERR-1216).\n\n" +
                 "This writes to your LevelPlay account. Apps not live in the store get the instances created as inactive.\n\n" +
                 "Continue?",
                 "Enable", "Cancel"))
@@ -833,6 +985,9 @@ namespace Wagenheimer.LevelPlayHelper.Editor
                     var format = (unit.adFormat ?? "").ToLowerInvariant();
                     if (format != "rewarded" && format != "interstitial" && format != "banner") continue;
 
+                    // Only the formats the game uses (an Ad Unit ID is configured locally).
+                    if (string.IsNullOrEmpty(HelperAdUnitId(prefix, format))) continue;
+
                     foreach (var network in DefaultNetworks)
                     {
                         var existing = instances.FirstOrDefault(i =>
@@ -851,21 +1006,32 @@ namespace Wagenheimer.LevelPlayHelper.Editor
                         {
                             toCreate.Add(new LevelPlayApiClient.InstanceRequest
                             {
-                                instanceName = "LevelPlayHelper",
+                                instanceName = "LevelPlayHelper-" + network,
                                 networkName = network,
                                 adFormat = unit.adFormat,
                                 isBidder = false,
-                                isLive = true
+                                isLive = true,
+                                rate = instanceRate
                             });
                         }
                     }
                 }
 
+                if (toActivate.Count == 0 && toCreate.Count == 0)
+                {
+                    Log($"  {app.appName}: nothing to do (formats already have the networks).");
+                    continue;
+                }
+
+                Log($"  {app.appName}: {toActivate.Count} instance(s) to activate, {toCreate.Count} to create (rate {instanceRate:0.####}).");
+
                 if (toActivate.Count > 0)
                 {
+                    Log($"PUT instances -> {app.appName}: activating {toActivate.Count}");
                     var result = await LevelPlayApiClient.UpdateInstancesAsync(app.appKey, toActivate);
                     if (!result.Ok)
                     {
+                        Log($"  FAILED activating for {app.appName}: {result.Error}");
                         SetStatus($"Activating instances failed for {app.appName}: {result.Error}", ColFail);
                         return;
                     }
@@ -874,12 +1040,15 @@ namespace Wagenheimer.LevelPlayHelper.Editor
 
                 if (toCreate.Count > 0)
                 {
+                    Log($"POST instances -> {app.appName}: {string.Join(", ", toCreate.Select(r => r.networkName + "/" + r.adFormat).Distinct())}");
                     var result = await LevelPlayApiClient.CreateInstancesAsync(app.appKey, toCreate);
                     if (!result.Ok)
                     {
+                        Log($"  FAILED creating for {app.appName}: {result.Error}");
                         SetStatus($"Creating instances failed for {app.appName}: {result.Error}", ColFail);
                         return;
                     }
+                    Log($"  OK for {app.appName}: {result.Json}");
                     created += toCreate.Count;
                 }
             }
