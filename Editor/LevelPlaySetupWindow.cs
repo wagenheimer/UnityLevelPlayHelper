@@ -1,4 +1,8 @@
+using System.Linq;
+
 using UnityEditor;
+using UnityEditor.PackageManager;
+
 using UnityEngine;
 using UnityEngine.UIElements;
 
@@ -28,6 +32,34 @@ namespace Wagenheimer.LevelPlayHelper.Editor
             window.titleContent = new GUIContent("LevelPlay Setup");
             window.minSize = new Vector2(760, 620);
             window.Show();
+        }
+
+        /// <summary>Version of this package (com.wagenheimer.levelplayhelper), or "" if unknown.</summary>
+        static string HelperVersion()
+        {
+            try
+            {
+                var info = PackageInfo.FindForAssembly(typeof(LevelPlaySetupWindow).Assembly);
+                return info != null ? info.version : "";
+            }
+            catch
+            {
+                return "";
+            }
+        }
+
+        /// <summary>Resolved version of the Ads Mediation package, or "" if not installed.</summary>
+        static string SdkVersion()
+        {
+            try
+            {
+                var sdk = PackageInfo.GetAllRegisteredPackages().FirstOrDefault(p => p.name == "com.unity.services.levelplay");
+                return sdk != null ? sdk.version : "";
+            }
+            catch
+            {
+                return "";
+            }
         }
 
         enum Tab
@@ -80,6 +112,17 @@ namespace Wagenheimer.LevelPlayHelper.Editor
             title.style.color = ColText;
             titleRow.Add(title);
 
+            var version = HelperVersion();
+            if (!string.IsNullOrEmpty(version))
+            {
+                var badge = new Label("v" + version);
+                badge.style.fontSize = 11;
+                badge.style.color = ColDim;
+                badge.style.marginLeft = 8;
+                badge.style.marginTop = 3;
+                titleRow.Add(badge);
+            }
+
             var spacer = new VisualElement();
             spacer.style.flexGrow = 1;
             titleRow.Add(spacer);
@@ -90,7 +133,9 @@ namespace Wagenheimer.LevelPlayHelper.Editor
             titleRow.Add(ToolbarButton("Check for updates", () => UpdateChecker.CheckForUpdate(true)));
             titleRow.Add(ToolbarButton("Refresh", RefreshCurrent, ColAccent));
 
+            var sdk = SdkVersion();
             var sub = new Label(
+                (string.IsNullOrEmpty(sdk) ? "" : "LevelPlay SDK " + sdk + "  |  ") +
                 "Configure the credentials (Credentials tab) and validate everything (Checklist tab). " +
                 "Credentials live on the LevelPlayHelper prefab - not in Ads Mediation > Developer Settings.");
             sub.style.fontSize = 10;
