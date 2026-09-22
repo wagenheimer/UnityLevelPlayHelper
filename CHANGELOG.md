@@ -5,6 +5,11 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.1.0] - 2026-09-22
+
+### Added
+- **Inline credential checker in the `LevelPlayHelper` inspector**: shows a red warning (with instructions and buttons for the LevelPlay Dashboard / Ad Units / full checklist) when the App Key or Ad Unit IDs for the active build target are missing, an amber warning when partially configured, plus a per-platform status matrix (App Key + Interstitial/Rewarded/Banner) so the whole state is visible without opening the checklist window.
+
 ## [2.0.2] - 2026-09-22
 
 ### Fixed
