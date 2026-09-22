@@ -22,7 +22,12 @@ namespace Wagenheimer.LevelPlayHelper.Editor
     /// Open via Tools > Wagenheimer > Level Play Helper > Setup Checklist... or from the
     /// LevelPlayHelper inspector.
     /// </summary>
-    internal class SetupChecklistWindow : EditorWindow
+    /// <summary>
+    /// UI Toolkit view with the full LevelPlay setup checklist. A plain class (not an
+    /// <see cref="EditorWindow"/>) so it can be hosted inside <see cref="LevelPlaySetupWindow"/>
+    /// next to the other tabs. Re-run every check with <see cref="Refresh"/>.
+    /// </summary>
+    internal sealed class SetupChecklistView
     {
         // ---------------------------------------------------------------- model
 
@@ -128,34 +133,23 @@ namespace Wagenheimer.LevelPlayHelper.Editor
 
         // ---------------------------------------------------------------- entry points
 
-        [MenuItem("Tools/Wagenheimer/Level Play Helper/Setup Checklist...", priority = 140)]
-        internal static void Open()
+        /// <summary>Root element to add to the host window.</summary>
+        public VisualElement Root { get; }
+
+        public SetupChecklistView()
         {
-            var window = GetWindow<SetupChecklistWindow>();
-            window.titleContent = new GUIContent("LevelPlay Setup Checklist");
-            window.minSize = new Vector2(620, 520);
-            window.Show();
-            window.RunChecks();
-        }
-
-        void OnEnable() => RunChecks();
-
-        // ---------------------------------------------------------------- UI
-
-        void CreateGUI()
-        {
-            var root = rootVisualElement;
-            root.style.paddingTop = 10;
-            root.style.paddingBottom = 10;
-            root.style.paddingLeft = 12;
-            root.style.paddingRight = 12;
+            Root = new VisualElement();
+            Root.style.paddingTop = 10;
+            Root.style.paddingBottom = 10;
+            Root.style.paddingLeft = 12;
+            Root.style.paddingRight = 12;
 
             headerHost = new VisualElement();
-            root.Add(headerHost);
+            Root.Add(headerHost);
 
             scroll = new ScrollView(ScrollViewMode.Vertical);
             scroll.style.flexGrow = 1;
-            root.Add(scroll);
+            Root.Add(scroll);
 
             bodyHost = new VisualElement();
             scroll.Add(bodyHost);
@@ -163,6 +157,11 @@ namespace Wagenheimer.LevelPlayHelper.Editor
             BuildChrome();
             Rebuild();
         }
+
+        /// <summary>Re-runs every check and repaints. Safe to call on a tab switch.</summary>
+        public void Refresh() => RunChecks();
+
+        // ---------------------------------------------------------------- UI
 
         void BuildChrome()
         {

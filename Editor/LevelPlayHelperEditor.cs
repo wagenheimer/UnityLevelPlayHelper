@@ -40,8 +40,8 @@ namespace Wagenheimer.LevelPlayHelper.Editor
 
             EditorGUILayout.BeginHorizontal();
 
-            if (GUILayout.Button("Open Setup Checklist", GUILayout.Height(24)))
-                SetupChecklistWindow.Open();
+            if (GUILayout.Button("Open Setup & Config", GUILayout.Height(24)))
+                LevelPlaySetupWindow.Open();
 
             if (GUILayout.Button("Dashboard", GUILayout.Height(24)))
                 Application.OpenURL(DashboardUrl);
@@ -161,7 +161,7 @@ namespace Wagenheimer.LevelPlayHelper.Editor
             if (GUILayout.Button("Abrir Ad Units", GUILayout.Height(22)))
                 Application.OpenURL(AdUnitsUrl);
             if (GUILayout.Button("Checklist completo", GUILayout.Height(22)))
-                SetupChecklistWindow.Open();
+                LevelPlaySetupWindow.Open();
 
             EditorGUILayout.EndHorizontal();
         }

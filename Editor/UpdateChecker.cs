@@ -1,13 +1,14 @@
-using UnityEditor;
 using Wagenheimer.PackageHub.Editor;
 
 namespace Wagenheimer.LevelPlayHelper.Editor
 {
-    public static class UpdateChecker
+    /// <summary>
+    /// Opens the Package Hub on this package so the user can update it. Exposed as a button inside
+    /// <see cref="LevelPlaySetupWindow"/> - it no longer has its own Tools menu item, so the
+    /// LevelPlay entry point is a single menu.
+    /// </summary>
+    internal static class UpdateChecker
     {
-        [MenuItem("Tools/Wagenheimer/Level Play Helper/Check for Updates...", priority = 100)]
-        public static void CheckForUpdateMenu() => CheckForUpdate(true);
-
         public static void CheckForUpdate(bool force = false)
         {
             PackageHubWindow.OpenToPackage("com.wagenheimer.levelplayhelper");
