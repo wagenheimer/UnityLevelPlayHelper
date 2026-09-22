@@ -40,7 +40,7 @@ namespace Wagenheimer.LevelPlayHelper.Editor
 
             EditorGUILayout.BeginHorizontal();
 
-            if (GUILayout.Button("Open Setup & Config", GUILayout.Height(24)))
+            if (GUILayout.Button("Open LevelPlay Manager", GUILayout.Height(24)))
                 LevelPlaySetupWindow.Open();
 
             if (GUILayout.Button("Dashboard", GUILayout.Height(24)))
@@ -160,7 +160,7 @@ namespace Wagenheimer.LevelPlayHelper.Editor
                 Application.OpenURL(DashboardUrl);
             if (GUILayout.Button("Open Ad Units", GUILayout.Height(22)))
                 Application.OpenURL(AdUnitsUrl);
-            if (GUILayout.Button("Open Setup & Config", GUILayout.Height(22)))
+            if (GUILayout.Button("Open LevelPlay Manager", GUILayout.Height(22)))
                 LevelPlaySetupWindow.Open();
 
             EditorGUILayout.EndHorizontal();

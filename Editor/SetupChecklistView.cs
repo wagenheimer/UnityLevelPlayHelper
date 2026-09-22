@@ -1582,7 +1582,7 @@ namespace Wagenheimer.LevelPlayHelper.Editor
             if (!report.HasAccountData)
             {
                 Add(CheckStatus.Info, "Dashboard cross-check",
-                    "Not verified against the dashboard yet. Open Setup & Config > Cloud (API) and press Verify configuration, then refresh here.",
+                    "Not verified against the dashboard yet. Open LevelPlay Manager > Cloud (API) and press Verify configuration, then refresh here.",
                     null);
                 return;
             }

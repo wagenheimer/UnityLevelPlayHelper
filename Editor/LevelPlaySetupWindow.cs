@@ -16,7 +16,7 @@ namespace Wagenheimer.LevelPlayHelper.Editor
     /// </summary>
     internal class LevelPlaySetupWindow : EditorWindow
     {
-        internal const string MenuPath = "Tools/Wagenheimer/Level Play Helper/Setup & Config...";
+        internal const string MenuPath = "Tools/Wagenheimer/Level Play Helper/LevelPlay Manager...";
 
         const string DashboardUrl = "https://platform.ironsrc.com/";
         const string AdUnitsUrl = "https://platform.ironsrc.com/partners/adUnits";
@@ -30,7 +30,7 @@ namespace Wagenheimer.LevelPlayHelper.Editor
         internal static void Open()
         {
             var window = GetWindow<LevelPlaySetupWindow>();
-            window.titleContent = new GUIContent("LevelPlay Setup");
+            window.titleContent = new GUIContent("LevelPlay Manager");
             window.minSize = new Vector2(760, 620);
             window.Show();
         }
@@ -67,17 +67,20 @@ namespace Wagenheimer.LevelPlayHelper.Editor
         {
             Credentials,
             Cloud,
+            Testing,
             Checklist
         }
 
         VisualElement contentHost;
         Button credentialsTab;
         Button cloudTab;
+        Button testingTab;
         Button checklistTab;
         Tab tab = Tab.Credentials;
 
         LevelPlayCredentialsPanel credentialsPanel;
         LevelPlayCloudPanel cloudPanel;
+        LevelPlayTestingPanel testingPanel;
         SetupChecklistView checklistView;
 
         void CreateGUI()
@@ -107,7 +110,7 @@ namespace Wagenheimer.LevelPlayHelper.Editor
             titleRow.style.alignItems = Align.Center;
             header.Add(titleRow);
 
-            var title = new Label("Level Play - Setup & Config");
+            var title = new Label("LevelPlay Manager");
             title.style.fontSize = 16;
             title.style.unityFontStyleAndWeight = FontStyle.Bold;
             title.style.color = ColText;
@@ -157,9 +160,11 @@ namespace Wagenheimer.LevelPlayHelper.Editor
 
             credentialsTab = TabButton("Credentials", Tab.Credentials);
             cloudTab = TabButton("Cloud (API)", Tab.Cloud);
+            testingTab = TabButton("Testing", Tab.Testing);
             checklistTab = TabButton("Checklist", Tab.Checklist);
             bar.Add(credentialsTab);
             bar.Add(cloudTab);
+            bar.Add(testingTab);
             bar.Add(checklistTab);
 
             return bar;
@@ -215,6 +220,12 @@ namespace Wagenheimer.LevelPlayHelper.Editor
                     contentHost.Add(cloudPanel.Root);
                     break;
 
+                case Tab.Testing:
+                    testingPanel ??= new LevelPlayTestingPanel();
+                    testingPanel.Reload();
+                    contentHost.Add(testingPanel.Root);
+                    break;
+
                 case Tab.Checklist:
                     checklistView ??= new SetupChecklistView();
                     checklistView.Refresh();
@@ -227,6 +238,7 @@ namespace Wagenheimer.LevelPlayHelper.Editor
         {
             Style(credentialsTab, tab == Tab.Credentials);
             Style(cloudTab, tab == Tab.Cloud);
+            Style(testingTab, tab == Tab.Testing);
             Style(checklistTab, tab == Tab.Checklist);
         }
 
@@ -249,6 +261,9 @@ namespace Wagenheimer.LevelPlayHelper.Editor
                     break;
                 case Tab.Cloud:
                     // The cloud panel keeps its state (fetched apps/ad units) while the window is open.
+                    break;
+                case Tab.Testing:
+                    testingPanel?.Reload();
                     break;
                 case Tab.Checklist:
                     checklistView?.Refresh();

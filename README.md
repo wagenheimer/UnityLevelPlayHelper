@@ -5,7 +5,7 @@
 [![License: MIT](https://img.shields.io/badge/License-MIT-green.svg)](LICENSE)
 [![Install](https://img.shields.io/badge/install-Git%20URL-orange)](#installation-unity-package-manager---git-url)
 
-A drop-in, production-ready manager for **Unity LevelPlay (Ads Mediation)**. Add one component, fill in your keys, and get SDK initialization, GDPR/CCPA/COPPA consent, interstitial/rewarded/banner lifecycle with exponential-backoff retries, impression-level revenue events, an **in-editor Setup and Config window** (Credentials, Cloud API and Checklist tabs), and a documented custom inspector — all without writing any mediation boilerplate in your game code.
+A drop-in, production-ready manager for **Unity LevelPlay (Ads Mediation)**. Add one component, fill in your keys, and get SDK initialization, GDPR/CCPA/COPPA consent, interstitial/rewarded/banner lifecycle with exponential-backoff retries, impression-level revenue events, an **in-editor LevelPlay Manager window** (Credentials, Cloud API, Testing and Checklist tabs), and a documented custom inspector — all without writing any mediation boilerplate in your game code.
 
 Built to be reused as-is across projects: subclass it for game-specific ad cadence, or use it directly.
 
@@ -14,7 +14,7 @@ Built to be reused as-is across projects: subclass it for game-specific ad caden
 - [Why this package](#why-this-package)
 - [Installation](#installation-unity-package-manager---git-url)
 - [Quick Start](#quick-start)
-- [Setup and Config (Editor Tool)](#setup-and-config-editor-tool)
+- [LevelPlay Manager (Editor Tool)](#levelplay-manager-editor-tool)
 - [Custom Inspector](#custom-inspector)
 - [Configuration Reference](#configuration-reference)
 - [API Reference](#api-reference)
@@ -66,7 +66,7 @@ https://github.com/wagenheimer/UnityLevelPlayHelper.git#v1.2.0
 | Ads Mediation package (`com.unity.services.levelplay`) | 9.5.0+ (auto-installed) |
 | Native dependency resolver | EDM4U or Mobile Dependency Resolver (ships with the Ads Mediation package) |
 
-Native dependency resolution is required before building to device: **Assets > External Dependency Manager > Android Resolver > Resolve** for Android, and **iOS Resolver > Install Cocoapods** for iOS. The [Setup and Config](#setup-and-config-editor-tool) verifies this for you.
+Native dependency resolution is required before building to device: **Assets > External Dependency Manager > Android Resolver > Resolve** for Android, and **iOS Resolver > Install Cocoapods** for iOS. The [LevelPlay Manager](#levelplay-manager-editor-tool) verifies this for you.
 
 ## Quick Start
 
@@ -74,7 +74,7 @@ Native dependency resolution is required before building to device: **Assets > E
 2. In the Inspector, fill in the **App Key** from the [LevelPlay dashboard](https://platform.ironsrc.com/) for Android and/or iOS.
 3. Fill in the Ad Unit IDs per platform. Leave an ID **empty** to disable that specific format on that platform — for example, leave Banner IDs empty if you don't use banners.
 4. (Optional) Adjust **Consent Settings** for GDPR / CCPA / COPPA — see [Privacy & Consent](#privacy--consent-gdpr--ccpa--coppa).
-5. Run **Tools > Wagenheimer > Level Play Helper > Setup & Config...** to verify nothing is missing before you build.
+5. Run **Tools > Wagenheimer > Level Play Helper > LevelPlay Manager...** to verify nothing is missing before you build.
 6. Press Play — mock ads load automatically in the Editor, no extra setup needed.
 
 ```csharp
@@ -90,13 +90,13 @@ LevelPlayHelper.Instance.ShowRewardedAd(() =>
 
 That's the entire integration surface for most games.
 
-## Setup and Config (Editor Tool)
+## LevelPlay Manager (Editor Tool)
 
 The package ships a single **EditorWindow** built with UI Toolkit. It is the one place to **configure** and **verify** everything, so you don't have to manually re-verify the [LevelPlay integration guide](https://docs.unity.com/en-us/grow/levelplay/) each release.
 
 **Open it via:**
-- `Tools > Wagenheimer > Level Play Helper > Setup & Config...`, or
-- The **Open Setup & Config** button at the top of the `LevelPlayHelper` component's Inspector.
+- `Tools > Wagenheimer > Level Play Helper > LevelPlay Manager...`, or
+- The **Open LevelPlay Manager** button at the top of the `LevelPlayHelper` component's Inspector.
 
 The window has three tabs:
 
@@ -136,7 +136,7 @@ Status legend: **✓ pass**, **! warning**, **✕ fail**, **• manual**, **i in
 
 ```
 ┌──────────────────────────────────────────────────────────────┐
-│  LevelPlay - Setup & Config       [Dashboard][Docs][Refresh]  │
+│  LevelPlay - LevelPlay Manager       [Dashboard][Docs][Refresh]  │
 │  LevelPlay SDK 9.5.1 | helper 1.2.0 | checked 14:32:07        │
 │  ✓ All automated checks passed        [24/26 automated]       │
 │  ████████████████████████████████░░                           │
@@ -159,7 +159,7 @@ Status legend: **✓ pass**, **! warning**, **✕ fail**, **• manual**, **i in
 Selecting a `LevelPlayHelper` (or subclass) shows a custom-drawn Inspector instead of the raw default one:
 
 - A help box explaining the component and how empty Ad Unit ID fields behave
-- Quick buttons: **Open Setup & Config**, **Dashboard**, **Docs**
+- Quick buttons: **Open LevelPlay Manager**, **Dashboard**, **Docs**
 - A live **Runtime Status** block while in Play Mode: SDK initialized, interstitial ready, rewarded ready
 - All the normal serialized fields below, unmodified
 - Footer links to the README, changelog, and issue tracker
@@ -337,7 +337,7 @@ public class MyGameAdsHelper : LevelPlayHelper
 }
 ```
 
-Add the subclass component instead of the base `LevelPlayHelper` to your persistent GameObject — the Setup and Config window and the custom inspector both work with any subclass automatically (they resolve `[CustomEditor(typeof(LevelPlayHelper), true)]` and search by base type).
+Add the subclass component instead of the base `LevelPlayHelper` to your persistent GameObject — the LevelPlay Manager window and the custom inspector both work with any subclass automatically (they resolve `[CustomEditor(typeof(LevelPlayHelper), true)]` and search by base type).
 
 ## Banner Positioning
 
@@ -389,7 +389,7 @@ Validate error handling and revenue callbacks on a real device build with the Te
 
 ## Production Release Checklist
 
-- [ ] `Setup & Config > Checklist` shows all automated checks passing (including the Dashboard cross-check)
+- [ ] `LevelPlay Manager > Checklist` shows all automated checks passing (including the Dashboard cross-check)
 - [ ] `Enable Test Suite` is **off** on every `LevelPlayHelper` instance
 - [ ] Real App Key + Ad Unit IDs (not placeholders) for every platform you ship
 - [ ] Tested with the LevelPlay Test Suite on a physical Android and/or iOS device
@@ -418,7 +418,7 @@ Your Game
 - **Runtime/UI/LevelPlayDebugOverlay.cs** — the runtime UI Toolkit debug panel (code-only; no prefab).
 - **Runtime/UI/Resources/LevelPlayDebugTheme.tss** — the default runtime theme the panel loads (`unity-theme://default`).
 - **Editor/LevelPlayHelperEditor.cs** — custom Inspector (`[CustomEditor(typeof(LevelPlayHelper), true)]`, so it applies to subclasses too).
-- **Editor/LevelPlaySetupWindow.cs** — the single Setup & Config `EditorWindow` (Credentials / Cloud / Checklist tabs).
+- **Editor/LevelPlaySetupWindow.cs** — the single LevelPlay Manager `EditorWindow` (Credentials / Cloud / Testing / Checklist tabs).
 - **Editor/SetupChecklistView.cs** — the checklist UI Toolkit view hosted by the window (eight sections, fixes, prompts, report).
 - **Editor/LevelPlayCredentialsPanel.cs** — the Credentials tab (edits the helper prefab with live validation).
 - **Editor/LevelPlayCloudPanel.cs** + **LevelPlayApiClient.cs** + **LevelPlayApiCredentials.cs** + **LevelPlayCloudCache.cs** — the Cloud (API) tab and its client.
@@ -432,7 +432,7 @@ Your Game
 The package assembly failed to import or compile. Open the Console for the underlying error. Common causes: the Ads Mediation package didn't resolve, or (for git packages) a missing `.meta` file in an immutable `PackageCache` folder — Unity silently ignores assets without one instead of generating it. If you hit this on a freshly cloned/resolved copy, delete the `Library/PackageCache/com.wagenheimer.levelplayhelper@*` folder and the matching line in `Packages/packages-lock.json`, then let Package Manager re-resolve.
 
 **Ads never load**
-Run **Setup & Config > Checklist** first — the most common causes are an empty App Key/Ad Unit ID, an Ad Unit ID that does not belong to the App Key, a paused ad unit, an ad unit with no active network, or missing native dependency resolution (Android/iOS builds only; mock ads in the Editor don't need it). Then open the [Runtime Debug Overlay](#runtime-debug-overlay) (F8) and read the **WHY NOT LOADING** banner; **Copy Report** gives you a full diagnostic dump for a bug report. Note that the LevelPlay init callback does not fire in every Editor configuration — the helper detects that and creates the mock ad objects anyway after 6s.
+Run **LevelPlay Manager > Checklist** first — the most common causes are an empty App Key/Ad Unit ID, an Ad Unit ID that does not belong to the App Key, a paused ad unit, an ad unit with no active network, or missing native dependency resolution (Android/iOS builds only; mock ads in the Editor don't need it). Then open the [Runtime Debug Overlay](#runtime-debug-overlay) (F8) and read the **WHY NOT LOADING** banner; **Copy Report** gives you a full diagnostic dump for a bug report. Note that the LevelPlay init callback does not fire in every Editor configuration — the helper detects that and creates the mock ad objects anyway after 6s.
 
 **`ShowRewardedAd` granted the reward but no ad played**
 Expected — that's the [fallback behavior](#fallback-behavior-rewarded-ads) when no rewarded inventory is available. Check `IsRewardedAdReady()` beforehand if your UX requires distinguishing "ad shown" from "reward granted for free."
@@ -452,7 +452,7 @@ This project follows [Semantic Versioning](https://semver.org/). See [CHANGELOG.
 
 ## Contributing
 
-Issues and PRs are welcome at [github.com/wagenheimer/UnityLevelPlayHelper](https://github.com/wagenheimer/UnityLevelPlayHelper). Please run the [Setup and Config](#setup-and-config-editor-tool) against a real project before submitting integration-related fixes, and keep commit messages in [Conventional Commits](https://www.conventionalcommits.org/) format — the release workflow depends on the prefix (`fix:`, `feat:`, `feat!:`) to pick the version bump.
+Issues and PRs are welcome at [github.com/wagenheimer/UnityLevelPlayHelper](https://github.com/wagenheimer/UnityLevelPlayHelper). Please run the [LevelPlay Manager](#levelplay-manager-editor-tool) against a real project before submitting integration-related fixes, and keep commit messages in [Conventional Commits](https://www.conventionalcommits.org/) format — the release workflow depends on the prefix (`fix:`, `feat:`, `feat!:`) to pick the version bump.
 
 ## License
 
