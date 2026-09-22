@@ -33,15 +33,18 @@ namespace Wagenheimer.LevelPlayHelper.Editor
         enum Tab
         {
             Credentials,
+            Cloud,
             Checklist
         }
 
         VisualElement contentHost;
         Button credentialsTab;
+        Button cloudTab;
         Button checklistTab;
         Tab tab = Tab.Credentials;
 
         LevelPlayCredentialsPanel credentialsPanel;
+        LevelPlayCloudPanel cloudPanel;
         SetupChecklistView checklistView;
 
         void CreateGUI()
@@ -107,8 +110,10 @@ namespace Wagenheimer.LevelPlayHelper.Editor
             bar.style.marginBottom = 6;
 
             credentialsTab = TabButton("Credentials", Tab.Credentials);
+            cloudTab = TabButton("Cloud (API)", Tab.Cloud);
             checklistTab = TabButton("Checklist", Tab.Checklist);
             bar.Add(credentialsTab);
+            bar.Add(cloudTab);
             bar.Add(checklistTab);
 
             return bar;
@@ -159,6 +164,11 @@ namespace Wagenheimer.LevelPlayHelper.Editor
                     contentHost.Add(credentialsPanel.Root);
                     break;
 
+                case Tab.Cloud:
+                    cloudPanel ??= new LevelPlayCloudPanel();
+                    contentHost.Add(cloudPanel.Root);
+                    break;
+
                 case Tab.Checklist:
                     checklistView ??= new SetupChecklistView();
                     checklistView.Refresh();
@@ -170,6 +180,7 @@ namespace Wagenheimer.LevelPlayHelper.Editor
         void HighlightTabs()
         {
             Style(credentialsTab, tab == Tab.Credentials);
+            Style(cloudTab, tab == Tab.Cloud);
             Style(checklistTab, tab == Tab.Checklist);
         }
 
@@ -189,6 +200,9 @@ namespace Wagenheimer.LevelPlayHelper.Editor
             {
                 case Tab.Credentials:
                     credentialsPanel?.Reload();
+                    break;
+                case Tab.Cloud:
+                    // The cloud panel keeps its state (fetched apps/ad units) while the window is open.
                     break;
                 case Tab.Checklist:
                     checklistView?.Refresh();
