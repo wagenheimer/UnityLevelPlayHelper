@@ -4,6 +4,7 @@ using System.Linq;
 using System.Threading.Tasks;
 
 using UnityEditor;
+using UnityEditor.Build;
 
 using UnityEngine;
 using UnityEngine.UIElements;
@@ -34,6 +35,7 @@ namespace Wagenheimer.LevelPlayHelper.Editor
         readonly Dictionary<string, List<LevelPlayApiClient.AdUnitDto>> unitsByApp = new Dictionary<string, List<LevelPlayApiClient.AdUnitDto>>();
 
         Label statusLabel;
+        Label storedLabel;
         VisualElement appsHost;
         VisualElement unitsHost;
         TextField secretField;
@@ -58,10 +60,16 @@ namespace Wagenheimer.LevelPlayHelper.Editor
             Root.Add(Section("API credentials",
                 "Account-level secrets from LevelPlay > My Account > API. Stored in EditorPrefs on this machine only - never written to the project or logged."));
 
-            secretField = SecretField("Secret Key", LevelPlayApiCredentials.SecretKey);
-            refreshField = SecretField("Refresh Token", LevelPlayApiCredentials.RefreshToken);
+            secretField = CredentialField("Secret Key");
+            refreshField = CredentialField("Refresh Token");
             Root.Add(secretField);
             Root.Add(refreshField);
+
+            storedLabel = new Label();
+            storedLabel.style.fontSize = 10;
+            storedLabel.style.color = ColDim;
+            storedLabel.style.marginTop = 2;
+            Root.Add(storedLabel);
 
             var actions = Row();
             actions.Add(Primary("Connect", ConnectAsync));
@@ -71,17 +79,18 @@ namespace Wagenheimer.LevelPlayHelper.Editor
                 LevelPlayApiClient.InvalidateToken();
                 secretField.value = "";
                 refreshField.value = "";
+                UpdateStoredLabel();
                 SetStatus("Credentials cleared.", ColDim);
             }));
             Root.Add(actions);
 
-            statusLabel = new Label(LevelPlayApiCredentials.HasCredentials
-                ? "Credentials stored. Press Connect."
-                : "No credentials stored.");
+            statusLabel = new Label();
             statusLabel.style.fontSize = 10.5f;
             statusLabel.style.color = ColDim;
             statusLabel.style.marginTop = 4;
             Root.Add(statusLabel);
+
+            UpdateStoredLabel();
 
             Root.Add(Section("Applications",
                 "Fetch your apps, then apply the per-platform App Key to the helper prefab."));
@@ -107,11 +116,24 @@ namespace Wagenheimer.LevelPlayHelper.Editor
             RenderUnits();
         }
 
-        static TextField SecretField(string label, string value)
+        // The value is never echoed back: the field starts empty and only an explicit paste is
+        // saved. An empty field keeps whatever is already stored for that key.
+        static TextField CredentialField(string label)
         {
-            var field = new TextField(label) { value = value, isPassword = true };
+            var field = new TextField(label);
+            field.tooltip = "Paste the value. Leave blank to keep the value already stored on this machine.";
             field.style.marginBottom = 2;
             return field;
+        }
+
+        void UpdateStoredLabel()
+        {
+            if (storedLabel == null) return;
+
+            storedLabel.text = LevelPlayApiCredentials.HasCredentials
+                ? "Credentials stored on this machine (EditorPrefs). Leave the fields blank to keep them."
+                : "No credentials stored yet.";
+            storedLabel.style.color = LevelPlayApiCredentials.HasCredentials ? ColOk : ColDim;
         }
 
         VisualElement Section(string title, string subtitle)
@@ -172,11 +194,23 @@ namespace Wagenheimer.LevelPlayHelper.Editor
 
         async void ConnectAsync()
         {
-            LevelPlayApiCredentials.Save(secretField.value.Trim(), refreshField.value.Trim());
+            var secret = secretField.value.Trim();
+            var refresh = refreshField.value.Trim();
+
+            if (!string.IsNullOrEmpty(secret) || !string.IsNullOrEmpty(refresh))
+            {
+                LevelPlayApiCredentials.Save(
+                    string.IsNullOrEmpty(secret) ? LevelPlayApiCredentials.SecretKey : secret,
+                    string.IsNullOrEmpty(refresh) ? LevelPlayApiCredentials.RefreshToken : refresh);
+
+                secretField.value = "";
+                refreshField.value = "";
+                UpdateStoredLabel();
+            }
 
             if (!LevelPlayApiCredentials.HasCredentials)
             {
-                SetStatus("Fill in both the Secret Key and the Refresh Token.", ColFail);
+                SetStatus("Paste the Secret Key and Refresh Token, then press Connect.", ColFail);
                 return;
             }
 
@@ -227,8 +261,8 @@ namespace Wagenheimer.LevelPlayHelper.Editor
             try
             {
                 return platform == "iOS"
-                    ? PlayerSettings.iOS.bundleIdentifier
-                    : PlayerSettings.applicationIdentifier;
+                    ? PlayerSettings.GetApplicationIdentifier(NamedBuildTarget.iOS)
+                    : PlayerSettings.GetApplicationIdentifier(NamedBuildTarget.Android);
             }
             catch
             {

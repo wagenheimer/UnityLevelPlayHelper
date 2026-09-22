@@ -296,7 +296,7 @@ namespace Wagenheimer.LevelPlayHelper.Editor
         }
 
         static string ToJsonArray<T>(IEnumerable<T> items) =>
-            "[" + string.Join(",", items.Select(JsonUtility.ToJson)) + "]";
+            "[" + string.Join(",", items.Select(item => JsonUtility.ToJson(item))) + "]";
 
         static string Truncate(string value) =>
             string.IsNullOrEmpty(value) ? "" : (value.Length > 400 ? value.Substring(0, 400) + "..." : value);
