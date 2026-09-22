@@ -5,6 +5,24 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.0.0] - 2026-09-22
+
+### Changed (breaking)
+- Minimum Unity version is now **2022.3 LTS** (was 2021.3): the debug overlay is built with runtime UI Toolkit and uses `IStyle.translate`.
+- `LevelPlayDebugOverlay` was rewritten from IMGUI to runtime UI Toolkit (`UIDocument` + `PanelSettings` created in code). It no longer uses `OnGUI`, so nothing is clipped, the log scrolls/filters and diagnostics can be copied to the clipboard. Toggle key, floating button and `CreateOverlay()` are unchanged.
+
+### Fixed
+- **Ads could silently never load**: ad objects were only created inside `LevelPlay.OnInitSuccess`, which does not fire in every SDK configuration in the Editor. A watchdog now creates them anyway after 6s in the Editor (mock ads work without the callback) and reports the stall instead of leaving an empty log.
+- **Duplicate SDK event subscriptions**: a failed init retried via `Invoke(Initialize)` and re-subscribed the static `OnInitSuccess`/`OnInitFailed` handlers every attempt, so callbacks (and ad object creation) fired N times. Subscriptions are now remove-then-add and ad objects are created once.
+- **The overlay contradicted the runtime in the Editor**: it reported the raw Inspector fields while the helper actually used Editor mock credentials, so a working mock setup showed "NO APP KEY" / "NOT CONFIGURED" and the Show buttons were disabled. Diagnostics are now mock-aware (`EffectiveHas*`, `UsesMock*`).
+- Banner ads now work in Play mode too: an Editor mock banner Ad Unit ID is used when the Inspector banner ID is empty.
+
+### Added
+- Central diagnostic log on `LevelPlayHelper` (500 entries, thread-safe, mirrored to the console) with `AdLogLevel`, `SnapshotLog()`, `ClearLog()` and the `OnDiagnosticLog` event.
+- `SdkInitState` / `AdFormatState` state machines and `AdFormatDiagnostics` per format: loading duration, last error code + message, retry attempt, next-retry countdown, last network/placement/revenue.
+- `LevelPlayHelper.Diagnose()` — a one-line "why are ads not loading?" explanation, surfaced as a banner at the top of the overlay.
+- `LevelPlayHelper.BuildDiagnosticReport()` and `CopyDiagnosticReportToClipboard()` for bug reports; the overlay also has Copy Log / filter / per-level colors.
+- Overlay: safe-area aware, screen-clamped, maximizable, runtime scale (A- / A+), no emoji glyphs (they rendered as tofu in the default GUI font).
 ## [1.9.1] - 2026-09-21
 
 ### Changed
