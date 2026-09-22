@@ -1,10 +1,11 @@
 using System.Linq;
 
 using UnityEditor;
-using UnityEditor.PackageManager;
 
 using UnityEngine;
 using UnityEngine.UIElements;
+
+using PackageInfo = UnityEditor.PackageManager.PackageInfo;
 
 namespace Wagenheimer.LevelPlayHelper.Editor
 {
