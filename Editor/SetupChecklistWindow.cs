@@ -673,6 +673,7 @@ namespace Wagenheimer.LevelPlayHelper.Editor
             CheckCadenceConfiguration();
             CheckTestSuiteFlag();
             CheckPlaceholders();
+            CheckCredentialFormat();
 
             BeginSection("5 - Android build", "Player settings that the LevelPlay Android SDK requires.");
             CheckAndroidBackend();
@@ -1350,28 +1351,53 @@ namespace Wagenheimer.LevelPlayHelper.Editor
             var usesInterstitial = apiUsage.ContainsKey("ShowInterstitial");
             var usesBanner = apiUsage.ContainsKey("ShowBanner") || apiUsage.ContainsKey("CreateBanner");
 
-            var missing = new List<string>();
-            if (usesRewarded && string.IsNullOrEmpty(GetString(so, "androidRewardedAdUnitId")) && string.IsNullOrEmpty(GetString(so, "iosRewardedAdUnitId")))
-                missing.Add("rewarded");
-            if (usesInterstitial && string.IsNullOrEmpty(GetString(so, "androidInterstitialAdUnitId")) && string.IsNullOrEmpty(GetString(so, "iosInterstitialAdUnitId")))
-                missing.Add("interstitial");
-            if (usesBanner && string.IsNullOrEmpty(GetString(so, "androidBannerAdUnitId")) && string.IsNullOrEmpty(GetString(so, "iosBannerAdUnitId")))
-                missing.Add("banner");
+            // Per-platform: an ID missing on only one platform used to pass silently because the
+            // old check required BOTH platforms to be empty before warning.
+            var missingAndroid = new List<string>();
+            var missingIos = new List<string>();
 
-            if (missing.Count == 0)
+            if (usesRewarded)
             {
-                Add(CheckStatus.Pass, "Every ad format used by the code has IDs",
+                if (string.IsNullOrEmpty(GetString(so, "androidRewardedAdUnitId"))) missingAndroid.Add("rewarded");
+                if (string.IsNullOrEmpty(GetString(so, "iosRewardedAdUnitId"))) missingIos.Add("rewarded");
+            }
+            if (usesInterstitial)
+            {
+                if (string.IsNullOrEmpty(GetString(so, "androidInterstitialAdUnitId"))) missingAndroid.Add("interstitial");
+                if (string.IsNullOrEmpty(GetString(so, "iosInterstitialAdUnitId"))) missingIos.Add("interstitial");
+            }
+            if (usesBanner)
+            {
+                if (string.IsNullOrEmpty(GetString(so, "androidBannerAdUnitId"))) missingAndroid.Add("banner");
+                if (string.IsNullOrEmpty(GetString(so, "iosBannerAdUnitId"))) missingIos.Add("banner");
+            }
+
+            var facts = new[]
+            {
+                "rewarded used: " + usesRewarded,
+                "interstitial used: " + usesInterstitial,
+                "banner used: " + usesBanner,
+                "missing on Android: " + (missingAndroid.Count == 0 ? "none" : string.Join(", ", missingAndroid)),
+                "missing on iOS: " + (missingIos.Count == 0 ? "none" : string.Join(", ", missingIos))
+            };
+
+            if (missingAndroid.Count == 0 && missingIos.Count == 0)
+            {
+                Add(CheckStatus.Pass, "Every ad format used by the code has IDs on both platforms",
                     $"Project code uses: {DescribeUsage(usesRewarded, usesInterstitial, usesBanner)}.")
-                    .WithFacts(
-                        "rewarded used: " + usesRewarded,
-                        "interstitial used: " + usesInterstitial,
-                        "banner used: " + usesBanner);
+                    .WithFacts(facts);
                 return;
             }
 
-            Add(CheckStatus.Warning, "Every ad format used by the code has IDs",
-                "The project calls these formats but no Ad Unit ID is configured for either platform: " + string.Join(", ", missing) + ". Those calls will fail or fall back.",
-                "https://docs.unity.com/en-us/grow/levelplay/platform/get-started/ad-units");
+            var detail = "A format the project calls has no Ad Unit ID for a platform:";
+            if (missingAndroid.Count > 0) detail += " Android needs " + string.Join(", ", missingAndroid) + ".";
+            if (missingIos.Count > 0) detail += " iOS needs " + string.Join(", ", missingIos) + ".";
+            detail += " An empty field disables that format on that platform; the Editor mock ads hide this, so it only shows up on a device build.";
+
+            Add(CheckStatus.Warning, "Every ad format used by the code has IDs on both platforms",
+                detail,
+                "https://docs.unity.com/en-us/grow/levelplay/platform/get-started/ad-units")
+                .WithFacts(facts);
         }
 
         void CheckConsentConfiguration()
@@ -1478,6 +1504,92 @@ namespace Wagenheimer.LevelPlayHelper.Editor
 
             Add(CheckStatus.Pass, "No placeholder credentials",
                 "No test/editor/YOUR_* placeholder detected in the helper credentials.");
+        }
+
+        /// <summary>
+        /// Validates the shape of the App Keys and Ad Unit IDs. LevelPlay credentials are plain
+        /// lowercase alphanumeric strings, so whitespace, uppercase, separators, URLs or an AdMob
+        /// unit id pasted into the wrong field are detectable here - and each of them makes the SDK
+        /// reject the ad unit at runtime ("invalid ad unit id") even though the field is not empty.
+        /// </summary>
+        void CheckCredentialFormat()
+        {
+            if (helpers.Count == 0)
+                return;
+
+            foreach (var helper in helpers.Select(h => h.Component).Distinct())
+            {
+                var so = new SerializedObject(helper);
+                var rows = new[]
+                {
+                    ("androidAppKey", "Android App Key", true),
+                    ("iosAppKey", "iOS App Key", true),
+                    ("androidInterstitialAdUnitId", "Android interstitial", false),
+                    ("androidRewardedAdUnitId", "Android rewarded", false),
+                    ("androidBannerAdUnitId", "Android banner", false),
+                    ("iosInterstitialAdUnitId", "iOS interstitial", false),
+                    ("iosRewardedAdUnitId", "iOS rewarded", false),
+                    ("iosBannerAdUnitId", "iOS banner", false)
+                };
+
+                var invalid = new List<string>();
+                var suspect = new List<string>();
+
+                foreach (var (field, label, isAppKey) in rows)
+                {
+                    var value = GetString(so, field);
+                    if (string.IsNullOrEmpty(value) || IsPlaceholder(value))
+                        continue;
+
+                    var reason = DescribeCredentialProblem(value, isAppKey);
+                    if (reason == null)
+                        continue;
+
+                    var entry = $"{label}: {reason} ({Mask(value)})";
+                    if (reason.StartsWith("length")) suspect.Add(entry);
+                    else invalid.Add(entry);
+                }
+
+                var item = Add(
+                    invalid.Count > 0 ? CheckStatus.Fail
+                    : suspect.Count > 0 ? CheckStatus.Warning
+                    : CheckStatus.Pass,
+                    "Credential format (" + helper.gameObject.name + ")",
+                    invalid.Count > 0
+                        ? "One or more credentials are not shaped like LevelPlay values. The SDK rejects such an ad unit at runtime with 'invalid ad unit id', so ads never load even though the field looks filled."
+                        : suspect.Count > 0
+                            ? "The credentials are alphanumeric but an unusual length was found - double-check they were copied from the right app in the LevelPlay dashboard."
+                            : "App Keys and Ad Unit IDs look like LevelPlay credentials (plain lowercase alphanumeric).",
+                    "https://docs.unity.com/en-us/grow/levelplay/platform/get-started/add-app");
+
+                foreach (var entry in invalid) item.Facts.Add("invalid: " + entry);
+                foreach (var entry in suspect) item.Facts.Add("check length: " + entry);
+            }
+        }
+
+        /// <summary>Returns a human reason when the value cannot be a LevelPlay credential, otherwise null.</summary>
+        static string DescribeCredentialProblem(string value, bool isAppKey)
+        {
+            if (value.IndexOf("ca-app-pub", StringComparison.OrdinalIgnoreCase) >= 0)
+                return "this is an AdMob unit id - it belongs in Ads Mediation > Developer Settings, not in a LevelPlay App Key/Ad Unit field";
+            if (value.Contains("://"))
+                return "looks like a URL";
+            if (value.Any(char.IsWhiteSpace))
+                return "contains whitespace";
+            if (value.Contains("-") || value.Contains("_"))
+                return "contains '-' or '_' - LevelPlay credentials have neither";
+            if (value.Any(char.IsUpper))
+                return "contains uppercase letters - LevelPlay credentials are lowercase";
+            if (!value.All(char.IsLetterOrDigit))
+                return "contains non-alphanumeric characters";
+
+            // Length is a soft signal: the canonical widths, but variations exist, so only warn.
+            if (isAppKey && value.Length != 9)
+                return "length " + value.Length + " (App Keys are usually 9 characters)";
+            if (!isAppKey && (value.Length < 6 || value.Length > 32))
+                return "length " + value.Length + " (Ad Unit IDs are usually 6-32 characters)";
+
+            return null;
         }
 
         // ---------------------------------------------------------------- section 5: Android build
