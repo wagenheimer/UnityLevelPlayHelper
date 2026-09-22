@@ -38,8 +38,17 @@ namespace Wagenheimer.LevelPlayHelper.Editor
         Label storedLabel;
         VisualElement appsHost;
         VisualElement unitsHost;
+        VisualElement createHost;
         TextField secretField;
         TextField refreshField;
+
+        // "Create application" form state
+        bool createLiveApp;
+        string newAppName = "";
+        string newAppPlatform = "Android";
+        string newStoreUrl = "";
+        string newTaxonomy = "puzzle";
+        bool newCoppa;
 
         public LevelPlayCloudPanel()
         {
@@ -97,6 +106,8 @@ namespace Wagenheimer.LevelPlayHelper.Editor
             Root.Add(Primary("Fetch applications", FetchApplicationsAsync));
             appsHost = new VisualElement();
             Root.Add(appsHost);
+
+            BuildCreateApp();
 
             Root.Add(Section("Ad units",
                 "Fetch the ad units of each app and apply the IDs to the helper prefab. Create the missing formats in one click."));
@@ -335,6 +346,107 @@ namespace Wagenheimer.LevelPlayHelper.Editor
             SetStatus(writes > 0
                 ? $"Applied {writes} App Key(s) to the helper prefab."
                 : "No application selected.", writes > 0 ? ColOk : ColWarn);
+        }
+
+        // ------------------------------------------------------------ create application
+
+        void BuildCreateApp()
+        {
+            Root.Add(Section("Create application",
+                "For a new game: create the app on the LevelPlay dashboard. Not published yet (name + platform) or already on the store (store URL + taxonomy)."));
+
+            var mode = new Toggle("Already published on the store") { value = createLiveApp };
+            mode.RegisterValueChangedCallback(e =>
+            {
+                createLiveApp = e.newValue;
+                RenderCreateFields();
+            });
+            Root.Add(mode);
+
+            createHost = new VisualElement();
+            Root.Add(createHost);
+
+            RenderCreateFields();
+        }
+
+        void RenderCreateFields()
+        {
+            if (createHost == null) return;
+            createHost.Clear();
+
+            if (createLiveApp)
+            {
+                AddText(createHost, "Store URL", newStoreUrl, v => newStoreUrl = v);
+                AddText(createHost, "Taxonomy (sub-genre)", newTaxonomy, v => newTaxonomy = v);
+                createHost.Add(Hint("The app name and platform come from the store listing."));
+            }
+            else
+            {
+                AddText(createHost, "App name", newAppName, v => newAppName = v);
+
+                var platforms = new List<string> { "Android", "iOS" };
+                var dropdown = new DropdownField("Platform", platforms, Mathf.Max(0, platforms.IndexOf(newAppPlatform)));
+                dropdown.RegisterValueChangedCallback(e => newAppPlatform = e.newValue);
+                createHost.Add(dropdown);
+                createHost.Add(Hint("App not live: the platform creates its instances as inactive until it is published."));
+            }
+
+            var coppa = new Toggle("COPPA (child-directed)") { value = newCoppa };
+            coppa.RegisterValueChangedCallback(e => newCoppa = e.newValue);
+            createHost.Add(coppa);
+
+            createHost.Add(Primary("Create application", CreateApplicationAsync));
+        }
+
+        static void AddText(VisualElement parent, string label, string value, Action<string> set)
+        {
+            var field = new TextField(label) { value = value };
+            field.RegisterValueChangedCallback(e => set(e.newValue));
+            parent.Add(field);
+        }
+
+        async void CreateApplicationAsync()
+        {
+            var request = new LevelPlayApiClient.AppRequest { coppa = newCoppa ? 1 : 0 };
+
+            if (createLiveApp)
+            {
+                if (string.IsNullOrWhiteSpace(newStoreUrl))
+                {
+                    SetStatus("Fill in the store URL.", ColFail);
+                    return;
+                }
+
+                request.storeUrl = newStoreUrl.Trim();
+                request.taxonomy = string.IsNullOrWhiteSpace(newTaxonomy) ? "puzzle" : newTaxonomy.Trim();
+            }
+            else
+            {
+                if (string.IsNullOrWhiteSpace(newAppName))
+                {
+                    SetStatus("Fill in the app name.", ColFail);
+                    return;
+                }
+
+                request.appName = newAppName.Trim();
+                request.platform = newAppPlatform;
+            }
+
+            var what = createLiveApp ? request.storeUrl : $"{request.appName} ({request.platform})";
+            if (!EditorUtility.DisplayDialog("Create application",
+                $"Create this app on the LevelPlay dashboard?\n\n{what}", "Create", "Cancel"))
+                return;
+
+            SetStatus("Creating application...", ColAccent);
+            var result = await LevelPlayApiClient.CreateApplicationAsync(request);
+
+            if (!result.Ok)
+            {
+                SetStatus("Create failed: " + result.Error, ColFail);
+                return;
+            }
+
+            SetStatus("Application created. Fetch applications to pick it up.", ColOk);
         }
 
         // ------------------------------------------------------------ ad units
