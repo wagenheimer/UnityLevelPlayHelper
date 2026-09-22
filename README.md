@@ -1,6 +1,6 @@
 # Level Play Helper
 
-[![Unity](https://img.shields.io/badge/Unity-2021.3%2B-black?logo=unity)](https://unity.com)
+[![Unity](https://img.shields.io/badge/Unity-2022.3%2B-black?logo=unity)](https://unity.com)
 [![LevelPlay SDK](https://img.shields.io/badge/Ads%20Mediation-9.5.0%2B-blue)](https://docs.unity.com/en-us/grow/levelplay/)
 [![License: MIT](https://img.shields.io/badge/License-MIT-green.svg)](LICENSE)
 [![Install](https://img.shields.io/badge/install-Git%20URL-orange)](#installation-unity-package-manager---git-url)
@@ -24,6 +24,7 @@ Built to be reused as-is across projects: subclass it for game-specific ad caden
 - [Impression-Level Revenue (ILRD) → Analytics](#impression-level-revenue-ilrd--analytics)
 - [Extending: Game-Specific Subclass](#extending-game-specific-subclass)
 - [Banner Positioning](#banner-positioning)
+- [Runtime Debug Overlay](#runtime-debug-overlay)
 - [Testing](#testing)
 - [Production Release Checklist](#production-release-checklist)
 - [Auto-Update Notifications](#auto-update-notifications)
@@ -61,7 +62,7 @@ https://github.com/wagenheimer/UnityLevelPlayHelper.git#v1.2.0
 
 | Requirement | Version |
 |---|---|
-| Unity | 2021.3 LTS or newer |
+| Unity | 2022.3 LTS or newer |
 | Ads Mediation package (`com.unity.services.levelplay`) | 9.5.0+ (auto-installed) |
 | Native dependency resolver | EDM4U or Mobile Dependency Resolver (ships with the Ads Mediation package) |
 
@@ -323,6 +324,28 @@ Add the subclass component instead of the base `LevelPlayHelper` to your persist
 
 `TopLeft` · `TopCenter` · `TopRight` · `CenterLeft` · `Center` · `CenterRight` · `BottomLeft` · `BottomCenter` (default) · `BottomRight`
 
+## Runtime Debug Overlay
+
+With `Enable Debug Overlay` on (default), `LevelPlayHelper` attaches a **runtime UI Toolkit panel** in the Unity Editor and Development Builds. Press **F8** (or tap the **ADS DBG** button) to open it. It is never created in release builds.
+
+What it gives you:
+
+- **"WHY NOT LOADING" banner** — `LevelPlayHelper.Diagnose()` picks the single most likely cause (init never completed, no App Key / Ad Unit ID, GDPR consent not granted, a format failing to load, Editor mock credentials) so you don't have to guess from the console.
+- **Per-format state machine** — `NotConfigured → Idle → Loading(12s) → Ready → Showing → Closed / Failed`, with the last error code + message, retry attempt, **next-retry countdown**, and the last serving network / placement / revenue.
+- **Honest credentials** — mock Editor credentials are labelled `(MOCK)` instead of being reported as missing.
+- **Event log** — the helper's central log (500 entries, thread-safe), with a text filter, per-level colors and a **Copy Log** button.
+- **Copy Report** — `BuildDiagnosticReport()` as text on the clipboard: Unity/device info, init state, credentials, per-format state, last errors and the log tail. Ideal for a bug report.
+- **Actions** — force init, force reload, show each format, banner hide/destroy, consent on/off, try-any-ad and Test Suite.
+- Safe-area aware, clamped to the screen, maximizable, and scalable at runtime with **A-** / **A+**.
+
+Everything it shows is also available from code: `Diagnose()`, `BuildDiagnosticReport()`, `SnapshotLog()`, `InitState`, and the `InterstitialDiagnostics` / `RewardedDiagnostics` / `BannerDiagnostics` snapshots.
+
+### Ads not loading?
+
+1. Open the overlay (F8) and read the **WHY NOT LOADING** banner.
+2. If it says the SDK init callback never arrived, that is expected in the Editor (mock ads do not need it) — the helper creates the ad objects anyway. On device, check the App Key and network.
+3. Press **Copy Report** and attach it to your issue.
+
 ## Testing
 
 Enable **Enable Test Suite** in the Inspector to launch the [LevelPlay Test Suite](https://docs.unity.com/en-us/grow/levelplay/sdk/unity/test-suite) automatically after init on device builds. **Disable it before releasing** — the Setup Checklist will warn you if it's left on.
@@ -370,6 +393,9 @@ Your Game
 ```
 
 - **Runtime/LevelPlayHelper.cs** — the `MonoBehaviour` described throughout this README.
+- **Runtime/LevelPlayDiagnostics.cs** — `SdkInitState` / `AdFormatState` / `AdLogLevel`, the `AdLogEntry` log entry and the per-format `AdFormatDiagnostics` snapshot.
+- **Runtime/UI/LevelPlayDebugOverlay.cs** — the runtime UI Toolkit debug panel (code-only; no prefab).
+- **Runtime/UI/Resources/LevelPlayDebugTheme.tss** — the default runtime theme the panel loads (`unity-theme://default`).
 - **Editor/LevelPlayHelperEditor.cs** — custom Inspector (`[CustomEditor(typeof(LevelPlayHelper), true)]`, so it applies to subclasses too).
 - **Editor/SetupChecklistWindow.cs** — the Setup Checklist `EditorWindow`.
 - **Editor/UpdateChecker.cs** + **UpdateAvailableWindow.cs** — the 24h auto-update check against this repo's `package.json`/`CHANGELOG.md`.
@@ -380,7 +406,7 @@ Your Game
 The package assembly failed to import or compile. Open the Console for the underlying error. Common causes: the Ads Mediation package didn't resolve, or (for git packages) a missing `.meta` file in an immutable `PackageCache` folder — Unity silently ignores assets without one instead of generating it. If you hit this on a freshly cloned/resolved copy, delete the `Library/PackageCache/com.wagenheimer.levelplayhelper@*` folder and the matching line in `Packages/packages-lock.json`, then let Package Manager re-resolve.
 
 **Ads never load**
-Run the Setup Checklist first — the most common causes are an empty App Key/Ad Unit ID, or missing native dependency resolution (Android/iOS builds only; mock ads in the Editor don't need it).
+Run the Setup Checklist first — the most common causes are an empty App Key/Ad Unit ID, or missing native dependency resolution (Android/iOS builds only; mock ads in the Editor don't need it). Then open the [Runtime Debug Overlay](#runtime-debug-overlay) (F8) and read the **WHY NOT LOADING** banner; **Copy Report** gives you a full diagnostic dump for a bug report. Note that the LevelPlay init callback does not fire in every Editor configuration — the helper detects that and creates the mock ad objects anyway after 6s.
 
 **`ShowRewardedAd` granted the reward but no ad played**
 Expected — that's the [fallback behavior](#fallback-behavior-rewarded-ads) when no rewarded inventory is available. Check `IsRewardedAdReady()` beforehand if your UX requires distinguishing "ad shown" from "reward granted for free."

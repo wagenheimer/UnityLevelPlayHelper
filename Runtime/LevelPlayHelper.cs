@@ -1,5 +1,8 @@
 using System;
 using System.Collections;
+using System.Collections.Generic;
+using System.Text;
+using System.Threading;
 
 using Unity.Services.LevelPlay;
 
@@ -73,6 +76,8 @@ namespace Wagenheimer.LevelPlayHelper
 
             Instance = this;
             DontDestroyOnLoad(gameObject);
+
+            mainThreadId = Thread.CurrentThread.ManagedThreadId;
 
             if (enableDebugOverlay && (Application.isEditor || Debug.isDebugBuild))
             {
@@ -170,6 +175,9 @@ namespace Wagenheimer.LevelPlayHelper
         private const int MaxRetryAttempt = 6;
         private const float BaseRetryDelaySeconds = 2f;
 
+        /// <summary>Ring-buffer size of the central diagnostic log.</summary>
+        private const int MaxLogEntries = 500;
+
         // Format names used by the ad lifecycle events / debug overlay.
         private const string InterstitialFormat = "Interstitial";
         private const string RewardedFormat = "Rewarded";
@@ -188,6 +196,27 @@ namespace Wagenheimer.LevelPlayHelper
         private Action onRewardSuccessCallback;
 
         public bool IsSdkInitialized => isSdkInitialized;
+
+        // SDK init lifecycle. The overlay uses these to explain a stuck initialization
+        // (the classic "nothing loads and the log stays empty").
+        private SdkInitState initState = SdkInitState.NotStarted;
+        private DateTime? initStartedUtc;
+        private string lastInitError;
+        private bool adObjectsCreated;
+
+        // Set in the Editor when the SDK init callback never arrives but mock ads are created
+        // anyway, so load helpers must not gate on isSdkInitialized only.
+        private bool usingEditorMockFallback;
+
+        // Central diagnostic log. Shared by every consumer, survives the overlay being created
+        // late, and is safe to write from the ILRD background thread.
+        private readonly List<AdLogEntry> diagnosticLog = new List<AdLogEntry>();
+        private readonly object diagnosticLogLock = new object();
+        private int mainThreadId;
+
+        private readonly AdFormatDiagnostics interstitialDiagnostics = new AdFormatDiagnostics { Format = InterstitialFormat };
+        private readonly AdFormatDiagnostics rewardedDiagnostics = new AdFormatDiagnostics { Format = RewardedFormat };
+        private readonly AdFormatDiagnostics bannerDiagnostics = new AdFormatDiagnostics { Format = BannerFormat };
 
         #endregion
 
@@ -238,6 +267,269 @@ namespace Wagenheimer.LevelPlayHelper
         /// <summary>Banner Ad Unit ID resolved for the current platform.</summary>
         public string BannerAdUnitIdResolved => BannerAdUnitId;
 
+        // ── Effective / mock-aware credentials ──────────────────────────────────────
+        // The raw fields above are what the Inspector holds. In the Editor the helper falls
+        // back to mock credentials, so the raw fields can be empty while ads still work.
+        // The overlay must report the effective values, otherwise it contradicts the runtime.
+
+        /// <summary>True when the App Key that will actually be used is the Editor mock one.</summary>
+        public bool UsesMockAppKey =>
+#if UNITY_EDITOR
+            string.IsNullOrEmpty(AppKey);
+#else
+            false;
+#endif
+
+        /// <summary>True when the interstitial Editor mock Ad Unit ID is standing in for the real one.</summary>
+        public bool UsesMockInterstitialId =>
+#if UNITY_EDITOR
+            string.IsNullOrEmpty(InterstitialAdUnitId);
+#else
+            false;
+#endif
+
+        /// <summary>True when the rewarded Editor mock Ad Unit ID is standing in for the real one.</summary>
+        public bool UsesMockRewardedId =>
+#if UNITY_EDITOR
+            string.IsNullOrEmpty(RewardedAdUnitId);
+#else
+            false;
+#endif
+
+        /// <summary>True when the banner Editor mock Ad Unit ID is standing in for the real one.</summary>
+        public bool UsesMockBannerId =>
+#if UNITY_EDITOR
+            string.IsNullOrEmpty(BannerAdUnitId);
+#else
+            false;
+#endif
+
+        /// <summary>True when any credential in use is an Editor mock (nothing is really configured).</summary>
+        public bool UsesAnyMockCredential =>
+            UsesMockAppKey || UsesMockInterstitialId || UsesMockRewardedId || UsesMockBannerId;
+
+        /// <summary>True when an App Key will actually be used (real or Editor mock).</summary>
+        public bool EffectiveHasAppKey => !string.IsNullOrEmpty(EffectiveAppKey);
+
+        /// <summary>True when an interstitial Ad Unit ID will actually be used (real or Editor mock).</summary>
+        public bool EffectiveHasInterstitialAdUnit => !string.IsNullOrEmpty(EffectiveInterstitialAdUnitId);
+
+        /// <summary>True when a rewarded Ad Unit ID will actually be used (real or Editor mock).</summary>
+        public bool EffectiveHasRewardedAdUnit => !string.IsNullOrEmpty(EffectiveRewardedAdUnitId);
+
+        /// <summary>True when a banner Ad Unit ID will actually be used (real or Editor mock).</summary>
+        public bool EffectiveHasBannerAdUnit => !string.IsNullOrEmpty(EffectiveBannerAdUnitId);
+
+        /// <summary>The App Key that will actually be used (real or Editor mock).</summary>
+        public string EffectiveAppKey =>
+#if UNITY_EDITOR
+            string.IsNullOrEmpty(AppKey) ? EditorMockAppKey : AppKey;
+#else
+            AppKey;
+#endif
+
+        // ── Init lifecycle ───────────────────────────────────────────────────────────
+
+        /// <summary>Current SDK init lifecycle state.</summary>
+        public SdkInitState InitState => initState;
+
+        /// <summary>Seconds since initialization last started (null before the first attempt).</summary>
+        public float? InitElapsedSeconds =>
+            initStartedUtc.HasValue
+                ? (float?)(DateTime.UtcNow - initStartedUtc.Value).TotalSeconds
+                : null;
+
+        /// <summary>"code: message" of the last SDK init failure (null when none).</summary>
+        public string LastInitError => lastInitError;
+
+        /// <summary>True while ads are served by the Editor mock fallback because the SDK callback never arrived.</summary>
+        public bool IsUsingEditorMockFallback => usingEditorMockFallback;
+
+        /// <summary>True once the ad objects have been created (guards against double creation).</summary>
+        public bool AreAdObjectsCreated => adObjectsCreated;
+
+        // ── Per-format snapshots ─────────────────────────────────────────────────────
+
+        /// <summary>Diagnostic snapshot for the interstitial format.</summary>
+        public AdFormatDiagnostics InterstitialDiagnostics => interstitialDiagnostics;
+
+        /// <summary>Diagnostic snapshot for the rewarded format.</summary>
+        public AdFormatDiagnostics RewardedDiagnostics => rewardedDiagnostics;
+
+        /// <summary>Diagnostic snapshot for the banner format.</summary>
+        public AdFormatDiagnostics BannerDiagnostics => bannerDiagnostics;
+
+        // ── Log ──────────────────────────────────────────────────────────────────────
+
+        /// <summary>Raised for every diagnostic log entry. Fires on a background thread for ILRD.</summary>
+        public static event Action<AdLogEntry> OnDiagnosticLog;
+
+        private bool IsMainThread => Thread.CurrentThread.ManagedThreadId == mainThreadId;
+
+        /// <summary>
+        /// Appends a diagnostic entry, mirrors it to the Unity console and notifies
+        /// <see cref="OnDiagnosticLog"/>. Safe to call from any thread.
+        /// </summary>
+        public void LogAd(AdLogLevel level, string message)
+        {
+            var entry = new AdLogEntry(DateTime.UtcNow, level, message, !IsMainThread);
+
+            lock (diagnosticLogLock)
+            {
+                diagnosticLog.Add(entry);
+                if (diagnosticLog.Count > MaxLogEntries)
+                    diagnosticLog.RemoveRange(0, diagnosticLog.Count - MaxLogEntries);
+            }
+
+            try { OnDiagnosticLog?.Invoke(entry); }
+            catch (Exception e) { Debug.LogError($"[LevelPlayHelper] Diagnostic log subscriber threw: {e.Message}"); }
+
+            switch (level)
+            {
+                case AdLogLevel.Error:
+                    Debug.LogError($"[LevelPlayHelper] {message}");
+                    break;
+                case AdLogLevel.Warning:
+                    Debug.LogWarning($"[LevelPlayHelper] {message}");
+                    break;
+                default:
+                    Debug.Log($"[LevelPlayHelper] {message}");
+                    break;
+            }
+        }
+
+        /// <summary>Number of buffered diagnostic entries.</summary>
+        public int LogCount
+        {
+            get { lock (diagnosticLogLock) return diagnosticLog.Count; }
+        }
+
+        /// <summary>Snapshot of the most recent <paramref name="max"/> entries, oldest first.</summary>
+        public List<AdLogEntry> SnapshotLog(int max = 200)
+        {
+            lock (diagnosticLogLock)
+            {
+                int take = Mathf.Clamp(max, 0, diagnosticLog.Count);
+                return diagnosticLog.GetRange(diagnosticLog.Count - take, take);
+            }
+        }
+
+        /// <summary>Clears the buffered diagnostic log.</summary>
+        public void ClearLog()
+        {
+            lock (diagnosticLogLock)
+                diagnosticLog.Clear();
+        }
+
+        // ── Diagnosis ────────────────────────────────────────────────────────────────
+
+        /// <summary>
+        /// Single most likely reason ads are not loading right now, or null when the setup
+        /// looks healthy. Drives the "why is nothing loading?" banner in the debug overlay.
+        /// </summary>
+        public string Diagnose()
+        {
+            if (!AdsSupported)
+                return "This platform is not mobile (and not the Editor), so the LevelPlay SDK is disabled entirely.";
+
+            if (initState == SdkInitState.NotStarted)
+                return "SDK initialization has not started yet (Initialize() was never reached).";
+
+            if (initState == SdkInitState.Initializing)
+                return $"Waiting for the SDK init callback ({(InitElapsedSeconds ?? 0f):F0}s elapsed)...";
+
+            if (initState == SdkInitState.Failed)
+                return $"SDK init failed: {lastInitError}. The helper retries automatically.";
+
+            if (initState == SdkInitState.CallbackMissing && !usingEditorMockFallback)
+                return "The SDK init callback never arrived. In the Editor this is harmless (mock ads do not need it); on device check the App Key, network and the LevelPlay dashboard.";
+
+            if (!EffectiveHasAppKey)
+                return "No App Key for this platform. Fill it in the Inspector.";
+
+            if (!EffectiveHasInterstitialAdUnit && !EffectiveHasRewardedAdUnit && !EffectiveHasBannerAdUnit)
+                return "No Ad Unit ID configured for this platform (interstitial, rewarded and banner are all empty).";
+
+            if (IsAnyAdReady)
+                return null;
+
+            var failing = FirstFailingFormat();
+            if (failing != null)
+                return $"{failing.Format} keeps failing to load: {failing.LastErrorMessage}";
+
+            if (UsesAnyMockCredential)
+                return "Running on Editor mock credentials - ads are placeholders and only fill on a device build.";
+
+            if (consentConfig.enableGDPRConsent && PlayerPrefs.GetInt(CONSENT_KEY, 0) != 1)
+                return "GDPR consent is not granted, which limits personalized fill.";
+
+            return "No ad ready yet and nothing is failing - loading is probably still in progress.";
+        }
+
+        private bool IsAnyAdReady =>
+            IsInterstitialReady() || IsRewardedAdReady() || (bannerAd != null);
+
+        private AdFormatDiagnostics FirstFailingFormat()
+        {
+            if (interstitialDiagnostics.State == AdFormatState.Failed) return interstitialDiagnostics;
+            if (rewardedDiagnostics.State == AdFormatState.Failed) return rewardedDiagnostics;
+            if (bannerDiagnostics.State == AdFormatState.Failed) return bannerDiagnostics;
+            return null;
+        }
+
+        /// <summary>
+        /// Builds a copy/paste friendly diagnostic report (SDK state, credentials, per-format
+        /// state machine, last errors and the log tail) suitable for a bug report.
+        /// </summary>
+        public string BuildDiagnosticReport()
+        {
+            var sb = new StringBuilder();
+            sb.AppendLine("=== LevelPlay Helper - diagnostic report ===");
+            sb.AppendLine($"Generated (UTC)   : {DateTime.UtcNow:yyyy-MM-dd HH:mm:ss}");
+            sb.AppendLine($"Unity             : {Application.unityVersion}");
+            sb.AppendLine($"Platform / device : {Application.platform} / {SystemInfo.deviceModel}");
+            sb.AppendLine($"Build             : {(Debug.isDebugBuild ? "development" : "release")}{(Application.isEditor ? " (Editor)" : string.Empty)}");
+            sb.AppendLine($"Ads supported     : {AdsSupported}");
+            sb.AppendLine();
+            sb.AppendLine($"SDK init state    : {initState}");
+            sb.AppendLine($"SDK initialized   : {isSdkInitialized}");
+            sb.AppendLine($"Init elapsed (s)  : {(InitElapsedSeconds.HasValue ? InitElapsedSeconds.Value.ToString("F1") : "-")}");
+            sb.AppendLine($"Mock fallback     : {usingEditorMockFallback}");
+            sb.AppendLine($"Last init error   : {lastInitError ?? "-"}");
+            sb.AppendLine($"App key           : {Mask(EffectiveAppKey)} [{(UsesMockAppKey ? "MOCK" : EffectiveHasAppKey ? "set" : "MISSING")}]");
+            sb.AppendLine($"Consent           : GDPR={(consentConfig.enableGDPRConsent ? "on" : "off")} CCPA={(consentConfig.ccpaOptOut ? "on" : "off")} COPPA={(consentConfig.coppaChildDirected ? "on" : "off")} stored={PlayerPrefs.GetInt(CONSENT_KEY, 0) == 1}");
+            sb.AppendLine($"Test suite        : {enableTestSuite}");
+            sb.AppendLine();
+            sb.AppendLine(interstitialDiagnostics.ToSummaryLine(IsInterstitialReady()));
+            AppendLastError(sb, interstitialDiagnostics);
+            sb.AppendLine(rewardedDiagnostics.ToSummaryLine(IsRewardedAdReady()));
+            AppendLastError(sb, rewardedDiagnostics);
+            sb.AppendLine(bannerDiagnostics.ToSummaryLine(bannerAd != null));
+            AppendLastError(sb, bannerDiagnostics);
+            sb.AppendLine();
+            sb.AppendLine($"Diagnosis         : {Diagnose() ?? "healthy"}");
+            sb.AppendLine();
+            sb.AppendLine("--- last events ---");
+            foreach (var entry in SnapshotLog(60))
+                sb.AppendLine(entry.ToLine());
+            return sb.ToString();
+        }
+
+        private static void AppendLastError(StringBuilder sb, AdFormatDiagnostics diag)
+        {
+            if (!string.IsNullOrEmpty(diag.LastErrorMessage))
+                sb.AppendLine($"    last error: {diag.LastErrorCode} {diag.LastErrorMessage}");
+            else if (!string.IsNullOrEmpty(diag.LastAdInfo))
+                sb.AppendLine($"    last ad info: {diag.LastAdInfo}");
+        }
+
+        private static string Mask(string value)
+        {
+            if (string.IsNullOrEmpty(value)) return "(none)";
+            if (value.Length <= 8) return value;
+            return value.Substring(0, 4) + "..." + value.Substring(value.Length - 4);
+        }
+
         #endregion
 
         #region Platform Resolution
@@ -280,6 +572,7 @@ namespace Wagenheimer.LevelPlayHelper
         private const string EditorMockAppKey = "editor-mock-app-key";
         private const string EditorMockInterstitialId = "editor-mock-interstitial";
         private const string EditorMockRewardedId = "editor-mock-rewarded";
+        private const string EditorMockBannerId = "editor-mock-banner";
 #endif
 
         /// <summary>Interstitial id actually used, falling back to a mock id in the Editor.</summary>
@@ -298,6 +591,17 @@ namespace Wagenheimer.LevelPlayHelper
             RewardedAdUnitId;
 #endif
 
+        /// <summary>Banner id actually used, falling back to a mock id in the Editor.</summary>
+        private string EffectiveBannerAdUnitId =>
+#if UNITY_EDITOR
+            string.IsNullOrEmpty(BannerAdUnitId) ? EditorMockBannerId : BannerAdUnitId;
+#else
+            BannerAdUnitId;
+#endif
+
+        /// <summary>True when ad objects may load: SDK initialized, or the Editor mock fallback is active.</summary>
+        private bool CanLoadAds => isSdkInitialized || usingEditorMockFallback;
+
         #endregion
 
         #region Initialization
@@ -309,16 +613,17 @@ namespace Wagenheimer.LevelPlayHelper
 
         /// <summary>
         /// Applies privacy settings and initializes the LevelPlay SDK.
-        /// Safe to call multiple times; only the first call has effect.
+        /// Safe to call multiple times; a call while initializing and any call after a
+        /// successful init are ignored.
         /// </summary>
         public void Initialize()
         {
-            if (isSdkInitialized)
+            if (isSdkInitialized || initState == SdkInitState.Initializing)
                 return;
 
             if (!AdsSupported)
             {
-                Debug.Log("[LevelPlayHelper] Not a mobile platform - ads disabled.");
+                LogAd(AdLogLevel.Warning, "Not a mobile platform (and not the Editor) - ads disabled.");
                 return;
             }
 
@@ -327,23 +632,58 @@ namespace Wagenheimer.LevelPlayHelper
             {
 #if UNITY_EDITOR
                 appKey = EditorMockAppKey;
-                Debug.LogWarning("[LevelPlayHelper] App Key is empty - initializing with the Editor mock key so Play mode can serve mock ads. Set the real key before building to device.");
+                LogAd(AdLogLevel.Warning, "App Key is empty - initializing with the Editor mock key so Play mode can serve mock ads. Set the real key before building to device.");
 #else
-                Debug.LogError("[LevelPlayHelper] App Key is empty. Fill it in the Inspector.");
+                LogAd(AdLogLevel.Error, "App Key is empty. Fill it in the Inspector.");
                 return;
 #endif
             }
 
             ApplyPrivacySettings();
 
+            // Remove before adding: the SDK events are static, so a retry after a failed init
+            // would otherwise stack duplicate handlers and fire every callback N times.
+            LevelPlay.OnInitSuccess -= OnInitSuccess;
+            LevelPlay.OnInitFailed -= OnInitFailed;
             LevelPlay.OnInitSuccess += OnInitSuccess;
             LevelPlay.OnInitFailed += OnInitFailed;
 
             if (enableTestSuite)
                 LevelPlay.SetMetaData("is_test_suite", "enable");
 
-            Debug.Log($"[LevelPlayHelper] Initializing LevelPlay SDK...");
+            initState = SdkInitState.Initializing;
+            initStartedUtc = DateTime.UtcNow;
+            lastInitError = null;
+
+            LogAd(AdLogLevel.Info, $"Initializing LevelPlay SDK... (app key {Mask(appKey)})");
             LevelPlay.Init(appKey);
+
+            StartCoroutine(InitWatchdog());
+        }
+
+        /// <summary>
+        /// Guards against the SDK init callback never arriving. In the Editor the mock ads work
+        /// without <c>OnInitSuccess</c>, so the ad objects are created anyway; on device this only
+        /// records the stall so the debug overlay can explain why nothing loads.
+        /// </summary>
+        private IEnumerator InitWatchdog()
+        {
+            const float timeoutSeconds = 6f;
+            yield return new WaitForSecondsRealtime(timeoutSeconds);
+
+            if (isSdkInitialized || initState != SdkInitState.Initializing)
+                yield break;
+
+            initState = SdkInitState.CallbackMissing;
+
+#if UNITY_EDITOR
+            usingEditorMockFallback = true;
+            LogAd(AdLogLevel.Warning, $"SDK init callback did not arrive after {timeoutSeconds:F0}s. Editor mock ads do not need it - creating ad objects anyway.");
+            CreateAdObjects();
+            LoadAllAds();
+#else
+            LogAd(AdLogLevel.Error, $"SDK init callback did not arrive after {timeoutSeconds:F0}s. Check the App Key, the network connection and the LevelPlay dashboard setup.");
+#endif
         }
 
         private void ApplyPrivacySettings()
@@ -356,7 +696,7 @@ namespace Wagenheimer.LevelPlayHelper
             if (consentConfig.enableGDPRConsent)
             {
                 LevelPlayPrivacySettings.SetGDPRConsent(hasUserConsent);
-                Debug.Log($"[LevelPlayHelper] GDPR consent applied: {hasUserConsent}");
+                LogAd(AdLogLevel.Info, $"GDPR consent applied: {hasUserConsent}");
             }
 
             if (consentConfig.ccpaOptOut)
@@ -379,10 +719,15 @@ namespace Wagenheimer.LevelPlayHelper
 
         private void OnInitSuccess(LevelPlayConfiguration config)
         {
-            Debug.Log("[LevelPlayHelper] LevelPlay SDK initialized successfully.");
+            if (isSdkInitialized)
+                return;
+
             isSdkInitialized = true;
+            initState = SdkInitState.Initialized;
+            LogAd(AdLogLevel.Success, "SDK initialized successfully.");
 
             CreateAdObjects();
+            LoadAllAds();
 
             OnSdkInitialized?.Invoke(config);
 
@@ -392,16 +737,28 @@ namespace Wagenheimer.LevelPlayHelper
 
         private void OnInitFailed(LevelPlayInitError error)
         {
-            Debug.LogError($"[LevelPlayHelper] LevelPlay initialization failed: {error.ErrorMessage}. Retrying in 10s...");
+            initState = SdkInitState.Failed;
+            lastInitError = $"{error.ErrorCode}: {error.ErrorMessage}";
+            LogAd(AdLogLevel.Error, $"SDK initialization failed: {error.ErrorMessage}. Retrying in 10s...");
             OnSdkInitializeFailed?.Invoke(error.ErrorMessage);
             Invoke(nameof(Initialize), 10f);
         }
 
         private void CreateAdObjects()
         {
+            if (adObjectsCreated)
+                return;
+
+            adObjectsCreated = true;
+
             var interstitialId = EffectiveInterstitialAdUnitId;
             if (!string.IsNullOrEmpty(interstitialId))
             {
+                interstitialDiagnostics.Configured = !string.IsNullOrEmpty(InterstitialAdUnitId);
+                interstitialDiagnostics.UsesMockId = UsesMockInterstitialId;
+                interstitialDiagnostics.AdUnitId = interstitialId;
+                interstitialDiagnostics.State = AdFormatState.Idle;
+
                 interstitialAd = new LevelPlayInterstitialAd(interstitialId);
 
                 interstitialAd.OnAdLoaded += OnInterstitialLoaded;
@@ -412,15 +769,23 @@ namespace Wagenheimer.LevelPlayHelper
                 interstitialAd.OnAdClicked += OnInterstitialClicked;
                 interstitialAd.OnAdInfoChanged += OnInterstitialInfoChanged;
                 interstitialAd.OnAdImpressionDataReady += OnImpressionDataReadyInternal;
+
+                LogAd(AdLogLevel.Info, $"Interstitial ad object created ({interstitialId}{(UsesMockInterstitialId ? " - MOCK" : string.Empty)}).");
             }
             else
             {
-                Debug.Log("[LevelPlayHelper] No interstitial ad unit configured for this platform.");
+                interstitialDiagnostics.State = AdFormatState.NotConfigured;
+                LogAd(AdLogLevel.Info, "No interstitial ad unit configured for this platform.");
             }
 
             var rewardedId = EffectiveRewardedAdUnitId;
             if (!string.IsNullOrEmpty(rewardedId))
             {
+                rewardedDiagnostics.Configured = !string.IsNullOrEmpty(RewardedAdUnitId);
+                rewardedDiagnostics.UsesMockId = UsesMockRewardedId;
+                rewardedDiagnostics.AdUnitId = rewardedId;
+                rewardedDiagnostics.State = AdFormatState.Idle;
+
                 rewardedAd = new LevelPlayRewardedAd(rewardedId);
 
                 rewardedAd.OnAdLoaded += OnRewardedLoaded;
@@ -432,11 +797,19 @@ namespace Wagenheimer.LevelPlayHelper
                 rewardedAd.OnAdClicked += OnRewardedClicked;
                 rewardedAd.OnAdInfoChanged += OnRewardedInfoChanged;
                 rewardedAd.OnAdImpressionDataReady += OnImpressionDataReadyInternal;
+
+                LogAd(AdLogLevel.Info, $"Rewarded ad object created ({rewardedId}{(UsesMockRewardedId ? " - MOCK" : string.Empty)}).");
             }
             else
             {
-                Debug.Log("[LevelPlayHelper] No rewarded ad unit configured for this platform.");
+                rewardedDiagnostics.State = AdFormatState.NotConfigured;
+                LogAd(AdLogLevel.Info, "No rewarded ad unit configured for this platform.");
             }
+
+            bannerDiagnostics.Configured = !string.IsNullOrEmpty(BannerAdUnitId);
+            bannerDiagnostics.UsesMockId = UsesMockBannerId;
+            bannerDiagnostics.AdUnitId = EffectiveBannerAdUnitId;
+            bannerDiagnostics.State = EffectiveHasBannerAdUnit ? AdFormatState.Idle : AdFormatState.NotConfigured;
 
             LoadAllAds();
         }
@@ -447,52 +820,110 @@ namespace Wagenheimer.LevelPlayHelper
 
         private void LoadAllAds()
         {
-            if (!isSdkInitialized)
+            if (!CanLoadAds)
                 return;
 
             if (interstitialAd != null && !interstitialAd.IsAdReady() && !isInterstitialLoading)
             {
                 isInterstitialLoading = true;
+                MarkLoading(interstitialDiagnostics);
                 interstitialAd.LoadAd();
             }
 
             if (rewardedAd != null && !rewardedAd.IsAdReady() && !isRewardedLoading)
             {
                 isRewardedLoading = true;
+                MarkLoading(rewardedDiagnostics);
                 rewardedAd.LoadAd();
             }
         }
 
         private void LoadInterstitialWithRetry()
         {
-            if (interstitialAd == null || isInterstitialLoading)
+            if (!CanLoadAds || interstitialAd == null || isInterstitialLoading)
                 return;
 
             isInterstitialLoading = true;
+            MarkLoading(interstitialDiagnostics);
             interstitialAd.LoadAd();
         }
 
         private void LoadRewardedWithRetry()
         {
-            if (rewardedAd == null || isRewardedLoading)
+            if (!CanLoadAds || rewardedAd == null || isRewardedLoading)
                 return;
 
             isRewardedLoading = true;
+            MarkLoading(rewardedDiagnostics);
             rewardedAd.LoadAd();
         }
 
         private static float GetRetryDelay(int attempt) =>
             Mathf.Min(MaxRetryAttempt, attempt) * BaseRetryDelaySeconds;
 
+        // ── Diagnostics bookkeeping (kept out of the callbacks for readability) ──────
+
+        private static void MarkLoading(AdFormatDiagnostics diag)
+        {
+            diag.IsLoading = true;
+            diag.LoadingSinceUtc = DateTime.UtcNow;
+            diag.State = AdFormatState.Loading;
+        }
+
+        private void MarkLoaded(AdFormatDiagnostics diag, LevelPlayAdInfo adInfo)
+        {
+            diag.IsLoading = false;
+            diag.LoadingSinceUtc = null;
+            diag.RetryAttempt = 0;
+            diag.NextRetryAtUtc = null;
+            diag.LastErrorCode = null;
+            diag.LastErrorMessage = null;
+            StoreAdInfo(diag, adInfo);
+            diag.LastLoadedAtUtc = DateTime.UtcNow;
+            diag.LoadsSucceeded++;
+            diag.State = AdFormatState.Ready;
+        }
+
+        private void MarkLoadFailed(AdFormatDiagnostics diag, LevelPlayAdError error, float retryDelaySeconds)
+        {
+            diag.IsLoading = false;
+            diag.LoadingSinceUtc = null;
+            diag.RetryAttempt++;
+            diag.LastErrorCode = error?.ErrorCode.ToString();
+            diag.LastErrorMessage = error?.ErrorMessage;
+            diag.LastErrorAtUtc = DateTime.UtcNow;
+            diag.NextRetryAtUtc = DateTime.UtcNow.AddSeconds(retryDelaySeconds);
+            diag.LoadsFailed++;
+            diag.State = AdFormatState.Failed;
+        }
+
+        private static void MarkDisplayed(AdFormatDiagnostics diag, LevelPlayAdInfo adInfo)
+        {
+            StoreAdInfo(diag, adInfo);
+            diag.State = AdFormatState.Showing;
+        }
+
+        /// <summary>Captures network / placement / revenue from an <c>LevelPlayAdInfo</c>.</summary>
+        private static void StoreAdInfo(AdFormatDiagnostics diag, LevelPlayAdInfo adInfo)
+        {
+            if (adInfo == null)
+                return;
+
+            diag.LastAdInfo = adInfo.ToString();
+            diag.LastAdNetwork = adInfo.AdNetwork;
+            diag.LastPlacementName = adInfo.PlacementName;
+            diag.LastRevenue = adInfo.Revenue;
+        }
+
         #endregion
 
         #region Public Ad Methods
 
         public bool IsInterstitialReady() =>
-            isSdkInitialized && interstitialAd != null && interstitialAd.IsAdReady();
+            CanLoadAds && interstitialAd != null && interstitialAd.IsAdReady();
 
         public bool IsRewardedAdReady() =>
-            isSdkInitialized && rewardedAd != null && rewardedAd.IsAdReady();
+            CanLoadAds && rewardedAd != null && rewardedAd.IsAdReady();
 
         public void ShowInterstitial()
         {
@@ -564,6 +995,8 @@ namespace Wagenheimer.LevelPlayHelper
         {
             isInterstitialLoading = false;
             isRewardedLoading = false;
+            interstitialDiagnostics.IsLoading = false;
+            rewardedDiagnostics.IsLoading = false;
             LoadAllAds();
         }
 
@@ -573,13 +1006,30 @@ namespace Wagenheimer.LevelPlayHelper
         /// </summary>
         public void LaunchTestSuite() => LevelPlay.LaunchTestSuite();
 
+        /// <summary>
+        /// Copies <see cref="BuildDiagnosticReport"/> to the system clipboard. No-op on
+        /// platforms without a clipboard.
+        /// </summary>
+        public void CopyDiagnosticReportToClipboard()
+        {
+            try
+            {
+                GUIUtility.systemCopyBuffer = BuildDiagnosticReport();
+                LogAd(AdLogLevel.Info, "Diagnostic report copied to the clipboard.");
+            }
+            catch (Exception e)
+            {
+                LogAd(AdLogLevel.Warning, $"Could not copy the report to the clipboard: {e.Message}");
+            }
+        }
+
         #endregion
 
         #region Banner
 
         public void CreateBanner()
         {
-            if (!isSdkInitialized || bannerAd != null || string.IsNullOrEmpty(BannerAdUnitId))
+            if (!CanLoadAds || bannerAd != null || string.IsNullOrEmpty(EffectiveBannerAdUnitId))
                 return;
 
             var configBuilder = new LevelPlayBannerAd.Config.Builder();
@@ -587,7 +1037,7 @@ namespace Wagenheimer.LevelPlayHelper
             configBuilder.SetDisplayOnLoad(true);
             configBuilder.SetRespectSafeArea(true);
 
-            bannerAd = new LevelPlayBannerAd(BannerAdUnitId, configBuilder.Build());
+            bannerAd = new LevelPlayBannerAd(EffectiveBannerAdUnitId, configBuilder.Build());
 
             bannerAd.OnAdLoaded += OnBannerLoaded;
             bannerAd.OnAdLoadFailed += OnBannerLoadFailed;
@@ -599,6 +1049,8 @@ namespace Wagenheimer.LevelPlayHelper
             bannerAd.OnAdLeftApplication += OnBannerLeftApplication;
             bannerAd.OnAdImpressionDataReady += OnImpressionDataReadyInternal;
 
+            MarkLoading(bannerDiagnostics);
+            LogAd(AdLogLevel.Info, $"Banner ad object created ({EffectiveBannerAdUnitId}{(UsesMockBannerId ? " - MOCK" : string.Empty)}).");
             bannerAd.LoadAd();
         }
 
@@ -626,6 +1078,10 @@ namespace Wagenheimer.LevelPlayHelper
             UnsubscribeBannerEvents();
             bannerAd.DestroyAd();
             bannerAd = null;
+
+            bannerDiagnostics.IsLoading = false;
+            bannerDiagnostics.LoadingSinceUtc = null;
+            bannerDiagnostics.State = EffectiveHasBannerAdUnit ? AdFormatState.Idle : AdFormatState.NotConfigured;
         }
 
         #endregion
@@ -634,9 +1090,10 @@ namespace Wagenheimer.LevelPlayHelper
 
         private void OnInterstitialLoaded(LevelPlayAdInfo adInfo)
         {
-            Debug.Log("[LevelPlayHelper] Interstitial loaded.");
             isInterstitialLoading = false;
             interstitialRetryAttempt = 0;
+            MarkLoaded(interstitialDiagnostics, adInfo);
+            LogAd(AdLogLevel.Success, "Interstitial LOADED");
             OnAdLoaded?.Invoke(InterstitialFormat);
         }
 
@@ -646,35 +1103,41 @@ namespace Wagenheimer.LevelPlayHelper
             interstitialRetryAttempt++;
 
             float delay = GetRetryDelay(interstitialRetryAttempt);
-            Debug.LogWarning($"[LevelPlayHelper] Interstitial load failed ({error.ErrorCode}: {error.ErrorMessage}). Retrying in {delay:F0}s.");
+            MarkLoadFailed(interstitialDiagnostics, error, delay);
+            LogAd(AdLogLevel.Error, $"Interstitial LOAD FAILED ({error.ErrorCode}: {error.ErrorMessage}). Retrying in {delay:F0}s.");
             OnAdLoadFailed?.Invoke(InterstitialFormat, error.ErrorMessage);
             Invoke(nameof(LoadInterstitialWithRetry), delay);
         }
 
         private void OnInterstitialDisplayed(LevelPlayAdInfo adInfo)
         {
-            Debug.Log("[LevelPlayHelper] Interstitial displayed.");
+            MarkDisplayed(interstitialDiagnostics, adInfo);
+            LogAd(AdLogLevel.Info, "Interstitial displayed.");
             OnAdDisplayed?.Invoke(InterstitialFormat);
         }
 
         private void OnInterstitialDisplayFailed(LevelPlayAdInfo adInfo, LevelPlayAdError error)
         {
-            Debug.LogError($"[LevelPlayHelper] Interstitial display failed: {error.ErrorMessage}");
+            interstitialDiagnostics.LastErrorCode = error?.ErrorCode.ToString();
+            interstitialDiagnostics.LastErrorMessage = error?.ErrorMessage;
+            LogAd(AdLogLevel.Error, $"Interstitial DISPLAY FAILED: {error.ErrorMessage}");
             OnAdDisplayFailed?.Invoke(InterstitialFormat, error.ErrorMessage);
             LoadInterstitialWithRetry();
         }
 
         private void OnInterstitialClosedInternal(LevelPlayAdInfo adInfo)
         {
-            Debug.Log("[LevelPlayHelper] Interstitial closed.");
+            interstitialDiagnostics.State = AdFormatState.Closed;
+            LogAd(AdLogLevel.Info, "Interstitial closed.");
             OnInterstitialClosed?.Invoke();
             LoadInterstitialWithRetry();
         }
 
         private void OnInterstitialClicked(LevelPlayAdInfo adInfo) =>
-            Debug.Log("[LevelPlayHelper] Interstitial clicked.");
+            LogAd(AdLogLevel.Info, "Interstitial clicked.");
 
-        private void OnInterstitialInfoChanged(LevelPlayAdInfo adInfo) { }
+        private void OnInterstitialInfoChanged(LevelPlayAdInfo adInfo) =>
+            StoreAdInfo(interstitialDiagnostics, adInfo);
 
         #endregion
 
@@ -682,9 +1145,10 @@ namespace Wagenheimer.LevelPlayHelper
 
         private void OnRewardedLoaded(LevelPlayAdInfo adInfo)
         {
-            Debug.Log("[LevelPlayHelper] Rewarded ad loaded.");
             isRewardedLoading = false;
             rewardedRetryAttempt = 0;
+            MarkLoaded(rewardedDiagnostics, adInfo);
+            LogAd(AdLogLevel.Success, "Rewarded LOADED");
             OnAdLoaded?.Invoke(RewardedFormat);
         }
 
@@ -694,20 +1158,24 @@ namespace Wagenheimer.LevelPlayHelper
             rewardedRetryAttempt++;
 
             float delay = GetRetryDelay(rewardedRetryAttempt);
-            Debug.LogWarning($"[LevelPlayHelper] Rewarded load failed ({error.ErrorCode}: {error.ErrorMessage}). Retrying in {delay:F0}s.");
+            MarkLoadFailed(rewardedDiagnostics, error, delay);
+            LogAd(AdLogLevel.Error, $"Rewarded LOAD FAILED ({error.ErrorCode}: {error.ErrorMessage}). Retrying in {delay:F0}s.");
             OnAdLoadFailed?.Invoke(RewardedFormat, error.ErrorMessage);
             Invoke(nameof(LoadRewardedWithRetry), delay);
         }
 
         private void OnRewardedDisplayed(LevelPlayAdInfo adInfo)
         {
-            Debug.Log("[LevelPlayHelper] Rewarded ad displayed.");
+            MarkDisplayed(rewardedDiagnostics, adInfo);
+            LogAd(AdLogLevel.Info, "Rewarded ad displayed.");
             OnAdDisplayed?.Invoke(RewardedFormat);
         }
 
         private void OnRewardedDisplayFailed(LevelPlayAdInfo adInfo, LevelPlayAdError error)
         {
-            Debug.LogError($"[LevelPlayHelper] Rewarded display failed: {error.ErrorMessage}");
+            rewardedDiagnostics.LastErrorCode = error?.ErrorCode.ToString();
+            rewardedDiagnostics.LastErrorMessage = error?.ErrorMessage;
+            LogAd(AdLogLevel.Error, $"Rewarded DISPLAY FAILED: {error.ErrorMessage}");
             OnAdDisplayFailed?.Invoke(RewardedFormat, error.ErrorMessage);
             onRewardSuccessCallback = null;
             LoadRewardedWithRetry();
@@ -715,7 +1183,7 @@ namespace Wagenheimer.LevelPlayHelper
 
         private void OnRewardedReceived(LevelPlayAdInfo adInfo, LevelPlayReward reward)
         {
-            Debug.Log($"[LevelPlayHelper] Reward received: {reward.Amount} {reward.Name}");
+            LogAd(AdLogLevel.Success, $"Reward received: {reward.Amount} {reward.Name}");
 
             // Consume the callback here so a later OnAdClosed cannot grant a second time.
             var callback = onRewardSuccessCallback;
@@ -727,7 +1195,8 @@ namespace Wagenheimer.LevelPlayHelper
 
         private void OnRewardedClosed(LevelPlayAdInfo adInfo)
         {
-            Debug.Log("[LevelPlayHelper] Rewarded ad closed.");
+            rewardedDiagnostics.State = AdFormatState.Closed;
+            LogAd(AdLogLevel.Info, "Rewarded ad closed.");
 
 #if UNITY_EDITOR
             // The Editor mock ad does not raise OnAdRewarded in every SDK configuration. Treat a
@@ -736,7 +1205,7 @@ namespace Wagenheimer.LevelPlayHelper
             var pending = onRewardSuccessCallback;
             if (pending != null)
             {
-                Debug.LogWarning("[LevelPlayHelper] Editor mock rewarded ad closed without the reward callback - granting anyway (Editor only).");
+                LogAd(AdLogLevel.Warning, "Editor mock rewarded ad closed without the reward callback - granting anyway (Editor only).");
                 onRewardSuccessCallback = null;
                 pending.Invoke();
                 OnRewardedAdGranted?.Invoke();
@@ -748,9 +1217,10 @@ namespace Wagenheimer.LevelPlayHelper
         }
 
         private void OnRewardedClicked(LevelPlayAdInfo adInfo) =>
-            Debug.Log("[LevelPlayHelper] Rewarded ad clicked.");
+            LogAd(AdLogLevel.Info, "Rewarded ad clicked.");
 
-        private void OnRewardedInfoChanged(LevelPlayAdInfo adInfo) { }
+        private void OnRewardedInfoChanged(LevelPlayAdInfo adInfo) =>
+            StoreAdInfo(rewardedDiagnostics, adInfo);
 
         #endregion
 
@@ -758,43 +1228,55 @@ namespace Wagenheimer.LevelPlayHelper
 
         private void OnBannerLoaded(LevelPlayAdInfo adInfo)
         {
-            Debug.Log("[LevelPlayHelper] Banner loaded.");
+            MarkLoaded(bannerDiagnostics, adInfo);
+            LogAd(AdLogLevel.Success, "Banner LOADED");
             OnAdLoaded?.Invoke(BannerFormat);
         }
 
         private void OnBannerLoadFailed(LevelPlayAdError error)
         {
-            Debug.LogWarning($"[LevelPlayHelper] Banner load failed: {error.ErrorMessage}. Retrying in 60s.");
+            MarkLoadFailed(bannerDiagnostics, error, 60f);
+            LogAd(AdLogLevel.Error, $"Banner LOAD FAILED ({error.ErrorCode}: {error.ErrorMessage}). Retrying in 60s.");
             OnAdLoadFailed?.Invoke(BannerFormat, error.ErrorMessage);
             Invoke(nameof(BannerRetryLoad), 60f);
         }
 
-        private void BannerRetryLoad() => bannerAd?.LoadAd();
+        private void BannerRetryLoad()
+        {
+            if (bannerAd == null)
+                return;
+
+            MarkLoading(bannerDiagnostics);
+            bannerAd.LoadAd();
+        }
 
         private void OnBannerDisplayed(LevelPlayAdInfo adInfo)
         {
-            Debug.Log("[LevelPlayHelper] Banner displayed.");
+            MarkDisplayed(bannerDiagnostics, adInfo);
+            LogAd(AdLogLevel.Info, "Banner displayed.");
             OnAdDisplayed?.Invoke(BannerFormat);
         }
 
         private void OnBannerDisplayFailed(LevelPlayAdInfo adInfo, LevelPlayAdError error)
         {
-            Debug.LogError($"[LevelPlayHelper] Banner display failed: {error.ErrorMessage}");
+            bannerDiagnostics.LastErrorCode = error?.ErrorCode.ToString();
+            bannerDiagnostics.LastErrorMessage = error?.ErrorMessage;
+            LogAd(AdLogLevel.Error, $"Banner DISPLAY FAILED: {error.ErrorMessage}");
             OnAdDisplayFailed?.Invoke(BannerFormat, error.ErrorMessage);
             Invoke(nameof(BannerRetryLoad), 60f);
         }
 
         private void OnBannerClicked(LevelPlayAdInfo adInfo) =>
-            Debug.Log("[LevelPlayHelper] Banner clicked.");
+            LogAd(AdLogLevel.Info, "Banner clicked.");
 
         private void OnBannerExpanded(LevelPlayAdInfo adInfo) =>
-            Debug.Log("[LevelPlayHelper] Banner expanded.");
+            LogAd(AdLogLevel.Info, "Banner expanded.");
 
         private void OnBannerCollapsed(LevelPlayAdInfo adInfo) =>
-            Debug.Log("[LevelPlayHelper] Banner collapsed.");
+            LogAd(AdLogLevel.Info, "Banner collapsed.");
 
         private void OnBannerLeftApplication(LevelPlayAdInfo adInfo) =>
-            Debug.Log("[LevelPlayHelper] Banner left application.");
+            LogAd(AdLogLevel.Info, "Banner left application.");
 
         private void UnsubscribeBannerEvents()
         {
@@ -838,7 +1320,7 @@ namespace Wagenheimer.LevelPlayHelper
             // forward to consumers, which are responsible for their own
             // thread-safety (e.g. dispatch to main thread for analytics SDKs).
             double revenue = impressionData.Revenue ?? 0d;
-            Debug.Log($"[LevelPlayHelper] Impression: {impressionData.AdNetwork} / {impressionData.AdFormat} / ${revenue}");
+            LogAd(AdLogLevel.Revenue, $"IMPRESSION: {impressionData.AdNetwork} / {impressionData.AdFormat} / ${revenue:F4} ({impressionData.MediationAdUnitId})");
 
             OnAdRevenuePaid?.Invoke(impressionData.MediationAdUnitId, revenue);
             OnImpressionDataReady?.Invoke(impressionData);
@@ -854,6 +1336,7 @@ namespace Wagenheimer.LevelPlayHelper
                 Instance = null;
 
             CancelInvoke();
+            StopAllCoroutines();
 
             LevelPlay.OnInitSuccess -= OnInitSuccess;
             LevelPlay.OnInitFailed -= OnInitFailed;
