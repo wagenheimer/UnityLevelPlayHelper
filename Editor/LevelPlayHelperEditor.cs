@@ -55,79 +55,101 @@ namespace Wagenheimer.LevelPlayHelper.Editor
         // ---------------------------------------------------------------- credential checker
 
         /// <summary>
-        /// Inline "is this configured?" panel. Red when the App Key / Ad Units for the active
-        /// build target are missing, amber when partially set, and a per-platform summary matrix
-        /// so the whole state is visible without opening the full checklist window.
+        /// Inline "is this configured?" panel. Red when a platform has no App Key (or none of its
+        /// Ad Unit IDs) or a credential is malformed, amber when a single format/platform is
+        /// incomplete. Both platforms are always evaluated - previously only the active build
+        /// target was, so on a desktop target the panel stayed informational and a missing
+        /// credential was never flagged in red.
         /// </summary>
         void DrawCredentialChecker()
         {
             serializedObject.Update();
 
             EditorGUILayout.Space(4);
-            EditorGUILayout.LabelField("Verificação de credenciais", EditorStyles.boldLabel);
+            EditorGUILayout.LabelField("LevelPlay credentials", EditorStyles.boldLabel);
 
-            var platform = ActivePlatform();
+            var active = ActivePlatform();
 
-            if (platform == null)
+            var errors = new List<string>();
+            var warnings = new List<string>();
+
+            EvaluatePlatform("Android", "android", active, errors, warnings);
+            EvaluatePlatform("iOS", "ios", active, errors, warnings);
+
+            if (errors.Count > 0)
             {
-                EditorGUILayout.HelpBox(
-                    "Build target atual não é Android nem iOS. Selecione Android ou iOS em File > Build Settings para validar as credenciais daquela plataforma.\n" +
-                    "No Editor os anúncios são mock, então funcionam mesmo com os campos vazios.",
-                    MessageType.Info);
+                var sb = new StringBuilder();
+                sb.AppendLine("Credenciais faltando ou invalidas - os anuncios reais NAO vao preencher no device.");
+                foreach (var e in errors) sb.AppendLine("- " + e);
+                sb.AppendLine();
+                sb.AppendLine("Preencha os campos App Key / Ad Unit IDs logo abaixo (Dashboard > Apps / Ad Units).");
+                EditorGUILayout.HelpBox(sb.ToString().TrimEnd(), MessageType.Error);
+                DrawCheckerActions();
+            }
+            else if (warnings.Count > 0)
+            {
+                var sb = new StringBuilder();
+                sb.AppendLine("Parcialmente configurado.");
+                foreach (var w in warnings) sb.AppendLine("- " + w);
+                EditorGUILayout.HelpBox(sb.ToString().TrimEnd(), MessageType.Warning);
+                DrawCheckerActions();
             }
             else
             {
-                var prefix = platform == PlatformIos ? "ios" : "android";
-                var appKey = GetString(prefix + "AppKey");
-                var interstitial = GetString(prefix + "InterstitialAdUnitId");
-                var rewarded = GetString(prefix + "RewardedAdUnitId");
-                var banner = GetString(prefix + "BannerAdUnitId");
-
-                var appKeyOk = IsSet(appKey) && !IsPlaceholder(appKey);
-                var missingIds = new List<string>();
-                if (!IsSet(interstitial)) missingIds.Add("interstitial");
-                if (!IsSet(rewarded)) missingIds.Add("rewarded");
-                if (!IsSet(banner)) missingIds.Add("banner");
-                var placeholderId = IsPlaceholder(interstitial) || IsPlaceholder(rewarded) || IsPlaceholder(banner);
-
-                if (!appKeyOk || missingIds.Count == 3)
-                {
-                    var sb = new StringBuilder();
-                    sb.AppendLine($"{platform}: credenciais NÃO configuradas — anúncios reais não vão preencher no device.");
-                    sb.AppendLine();
-                    if (!appKeyOk)
-                        sb.AppendLine("• App Key " + (IsPlaceholder(appKey) ? "ainda é um placeholder" : "vazio") +
-                                      " → LevelPlay Dashboard > Apps > seu app > App Key (uma por plataforma).");
-                    if (missingIds.Count == 3)
-                        sb.AppendLine("• Nenhum Ad Unit ID → Dashboard > Ad Units: crie Interstitial, Rewarded e Banner para " +
-                                      platform + " e cole cada código no campo correspondente abaixo.");
-                    sb.AppendLine();
-                    sb.AppendLine($"Cole os valores nos campos \"{PlatformFieldLabel(platform)} ...\" logo abaixo.");
-                    EditorGUILayout.HelpBox(sb.ToString().TrimEnd(), MessageType.Error);
-                    DrawCheckerActions();
-                }
-                else if (missingIds.Count > 0 || placeholderId)
-                {
-                    var sb = new StringBuilder();
-                    sb.AppendLine($"{platform}: parcialmente configurado.");
-                    if (missingIds.Count > 0)
-                        sb.AppendLine("• Sem Ad Unit ID para: " + string.Join(", ", missingIds) +
-                                      ". Esse formato fica DESABILITADO nesta plataforma (Dashboard > Ad Units).");
-                    if (placeholderId)
-                        sb.AppendLine("• Algum Ad Unit ID parece placeholder — troque pelo código real do dashboard.");
-                    EditorGUILayout.HelpBox(sb.ToString().TrimEnd(), MessageType.Warning);
-                    DrawCheckerActions();
-                }
-                else
-                {
-                    EditorGUILayout.HelpBox(
-                        $"{platform}: App Key e Ad Unit IDs configurados. Valide no device (Test Suite) antes de publicar.",
-                        MessageType.Info);
-                }
+                EditorGUILayout.HelpBox(
+                    "Android e iOS: App Key e Ad Unit IDs configurados. Valide no device (Test Suite) antes de publicar.",
+                    MessageType.Info);
             }
 
             DrawCredentialMatrix();
             EditorGUILayout.Space(4);
+        }
+
+        void EvaluatePlatform(string platform, string prefix, string active, List<string> errors, List<string> warnings)
+        {
+            var tag = platform == active ? platform + " (build target atual)" : platform;
+
+            var appKey = GetString(prefix + "AppKey");
+            var interstitial = GetString(prefix + "InterstitialAdUnitId");
+            var rewarded = GetString(prefix + "RewardedAdUnitId");
+            var banner = GetString(prefix + "BannerAdUnitId");
+
+            // App Key: empty, placeholder or malformed are all hard errors.
+            if (!CredentialValidation.IsSet(appKey))
+                errors.Add($"{tag}: App Key vazio (Dashboard > Apps).");
+            else if (CredentialValidation.IsPlaceholder(appKey))
+                errors.Add($"{tag}: App Key ainda e um placeholder (Dashboard > Apps).");
+            else
+            {
+                var reason = CredentialValidation.DescribeProblem(appKey, true);
+                if (CredentialValidation.IsHardProblem(reason))
+                    errors.Add($"{tag}: App Key invalido - {reason}.");
+            }
+
+            // Ad Unit IDs: none at all is a hard error; a single empty one is a warning.
+            var missing = new List<string>();
+            if (!CredentialValidation.IsSet(interstitial)) missing.Add("interstitial");
+            if (!CredentialValidation.IsSet(rewarded)) missing.Add("rewarded");
+            if (!CredentialValidation.IsSet(banner)) missing.Add("banner");
+
+            if (missing.Count == 3)
+                errors.Add($"{tag}: nenhum Ad Unit ID (Dashboard > Ad Units).");
+            else if (missing.Count > 0)
+                warnings.Add($"{tag}: sem Ad Unit ID para {string.Join(", ", missing)} - esse formato fica desabilitado nessa plataforma.");
+
+            CheckId(interstitial, "interstitial", tag, errors);
+            CheckId(rewarded, "rewarded", tag, errors);
+            CheckId(banner, "banner", tag, errors);
+        }
+
+        static void CheckId(string value, string label, string tag, List<string> errors)
+        {
+            if (!CredentialValidation.IsSet(value))
+                return;
+
+            var reason = CredentialValidation.DescribeProblem(value, false);
+            if (CredentialValidation.IsHardProblem(reason))
+                errors.Add($"{tag}: Ad Unit ID {label} invalido - {reason}.");
         }
 
         void DrawCheckerActions()
@@ -146,7 +168,7 @@ namespace Wagenheimer.LevelPlayHelper.Editor
 
         void DrawCredentialMatrix()
         {
-            EditorGUILayout.LabelField("Resumo — App Key / Ad Units por plataforma", EditorStyles.miniBoldLabel);
+            EditorGUILayout.LabelField("Resumo - App Key / Ad Units por plataforma", EditorStyles.miniBoldLabel);
             EditorGUI.indentLevel++;
             DrawPlatformRow("Android", "android");
             DrawPlatformRow("iOS", "ios");
@@ -155,16 +177,19 @@ namespace Wagenheimer.LevelPlayHelper.Editor
 
         void DrawPlatformRow(string label, string prefix)
         {
-            var appKey = GetString(prefix + "AppKey");
-
             EditorGUILayout.BeginHorizontal();
             EditorGUILayout.LabelField(label, GUILayout.Width(58));
-            StatusDot(IsSet(appKey) && !IsPlaceholder(appKey), "App Key");
-            StatusDot(IsSet(GetString(prefix + "InterstitialAdUnitId")), "Interstitial");
-            StatusDot(IsSet(GetString(prefix + "RewardedAdUnitId")), "Rewarded");
-            StatusDot(IsSet(GetString(prefix + "BannerAdUnitId")), "Banner");
+            StatusDot(IsCredentialOk(GetString(prefix + "AppKey"), true), "App Key");
+            StatusDot(IsCredentialOk(GetString(prefix + "InterstitialAdUnitId"), false), "Interstitial");
+            StatusDot(IsCredentialOk(GetString(prefix + "RewardedAdUnitId"), false), "Rewarded");
+            StatusDot(IsCredentialOk(GetString(prefix + "BannerAdUnitId"), false), "Banner");
             EditorGUILayout.EndHorizontal();
         }
+
+        static bool IsCredentialOk(string value, bool isAppKey) =>
+            CredentialValidation.IsSet(value)
+            && !CredentialValidation.IsPlaceholder(value)
+            && !CredentialValidation.IsHardProblem(CredentialValidation.DescribeProblem(value, isAppKey));
 
         void StatusDot(bool ok, string text)
         {
@@ -172,7 +197,7 @@ namespace Wagenheimer.LevelPlayHelper.Editor
             {
                 normal = { textColor = ok ? OkColor : BadColor }
             };
-            var content = new GUIContent((ok ? "\u25CF " : "\u25CB ") + text, ok ? "Configurado" : "Vazio / placeholder");
+            var content = new GUIContent((ok ? "\u25CF " : "\u25CB ") + text, ok ? "Configured" : "Empty / placeholder / invalid");
             EditorGUILayout.LabelField(content, style, GUILayout.Width(104));
         }
 
@@ -225,29 +250,11 @@ namespace Wagenheimer.LevelPlayHelper.Editor
             return null;
         }
 
-        static string PlatformFieldLabel(string platform) => platform == PlatformIos ? "iOS" : "Android";
-
         /// <summary>Reads a serialized string field (e.g. "androidAppKey") from the inspected helper.</summary>
         string GetString(string propertyName)
         {
             var prop = serializedObject.FindProperty(propertyName);
             return prop != null ? prop.stringValue : string.Empty;
-        }
-
-        static bool IsSet(string value) => !string.IsNullOrWhiteSpace(value);
-
-        static bool IsPlaceholder(string value)
-        {
-            if (string.IsNullOrEmpty(value))
-                return false;
-
-            var lower = value.ToLowerInvariant();
-            return lower.Contains("your_")
-                   || lower.Contains("yourapp")
-                   || lower.Contains("placeholder")
-                   || lower == "test"
-                   || lower == "editor"
-                   || lower == "dummy";
         }
     }
 }

@@ -1541,7 +1541,7 @@ namespace Wagenheimer.LevelPlayHelper.Editor
                     if (string.IsNullOrEmpty(value) || IsPlaceholder(value))
                         continue;
 
-                    var reason = DescribeCredentialProblem(value, isAppKey);
+                    var reason = CredentialValidation.DescribeProblem(value, isAppKey);
                     if (reason == null)
                         continue;
 
@@ -1565,31 +1565,6 @@ namespace Wagenheimer.LevelPlayHelper.Editor
                 foreach (var entry in invalid) item.Facts.Add("invalid: " + entry);
                 foreach (var entry in suspect) item.Facts.Add("check length: " + entry);
             }
-        }
-
-        /// <summary>Returns a human reason when the value cannot be a LevelPlay credential, otherwise null.</summary>
-        static string DescribeCredentialProblem(string value, bool isAppKey)
-        {
-            if (value.IndexOf("ca-app-pub", StringComparison.OrdinalIgnoreCase) >= 0)
-                return "this is an AdMob unit id - it belongs in Ads Mediation > Developer Settings, not in a LevelPlay App Key/Ad Unit field";
-            if (value.Contains("://"))
-                return "looks like a URL";
-            if (value.Any(char.IsWhiteSpace))
-                return "contains whitespace";
-            if (value.Contains("-") || value.Contains("_"))
-                return "contains '-' or '_' - LevelPlay credentials have neither";
-            if (value.Any(char.IsUpper))
-                return "contains uppercase letters - LevelPlay credentials are lowercase";
-            if (!value.All(char.IsLetterOrDigit))
-                return "contains non-alphanumeric characters";
-
-            // Length is a soft signal: the canonical widths, but variations exist, so only warn.
-            if (isAppKey && value.Length != 9)
-                return "length " + value.Length + " (App Keys are usually 9 characters)";
-            if (!isAppKey && (value.Length < 6 || value.Length > 32))
-                return "length " + value.Length + " (Ad Unit IDs are usually 6-32 characters)";
-
-            return null;
         }
 
         // ---------------------------------------------------------------- section 5: Android build
