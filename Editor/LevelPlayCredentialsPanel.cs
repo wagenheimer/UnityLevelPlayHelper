@@ -54,17 +54,17 @@ namespace Wagenheimer.LevelPlayHelper.Editor
 
             if (helper == null)
             {
-                Root.Add(Info("Nenhum LevelPlayHelper encontrado",
-                    "Nao existe prefab/scene com o componente LevelPlayHelper. Crie o prefab (Assets/Resources/Monetization/LevelPlayHelper.prefab) " +
-                    "e ele aparecera aqui para configurar.", ColFail));
+                Root.Add(Info("No LevelPlayHelper found",
+                    "No prefab or open scene contains the LevelPlayHelper component. Create the prefab " +
+                    "(Assets/Resources/Monetization/LevelPlayHelper.prefab) and it will show up here for configuration.", ColFail));
                 return;
             }
 
             serialized = new SerializedObject(helper);
 
-            Root.Add(Info("Credenciais do LevelPlayHelper",
-                "Estes valores sao gravados no prefab " + LevelPlayHelperLocator.LocationOf(helper) +
-                " - e o objeto que o runtime instancia. Estes campos NAO sao as configuracoes de Ads Mediation > Developer Settings.", ColAccent));
+            Root.Add(Info("LevelPlayHelper credentials",
+                "These values are written to the prefab " + LevelPlayHelperLocator.LocationOf(helper) +
+                " - the object the runtime instantiates. These are NOT the Ads Mediation > Developer Settings.", ColAccent));
 
             Root.Add(PlatformCard("Android", "android"));
             Root.Add(PlatformCard("iOS", "ios"));
@@ -93,8 +93,8 @@ namespace Wagenheimer.LevelPlayHelper.Editor
             card.Add(title);
 
             var hint = new Label(prefix == "ios"
-                ? "Dashboard > Apps: copie o App Key do app iOS. Ad Units: 1 por formato."
-                : "Dashboard > Apps: copie o App Key do app Android. Ad Units: 1 por formato.");
+                ? "Dashboard > Apps: copy the iOS app's App Key. Ad Units: one per format."
+                : "Dashboard > Apps: copy the Android app's App Key. Ad Units: one per format.");
             hint.style.fontSize = 10;
             hint.style.color = ColDim;
             hint.style.marginBottom = 6;
@@ -103,7 +103,7 @@ namespace Wagenheimer.LevelPlayHelper.Editor
             AddField(card, platform, prefix + "AppKey", "App Key", true);
             AddField(card, platform, prefix + "InterstitialAdUnitId", "Interstitial Ad Unit ID", false);
             AddField(card, platform, prefix + "RewardedAdUnitId", "Rewarded Ad Unit ID", false);
-            AddField(card, platform, prefix + "BannerAdUnitId", "Banner Ad Unit ID (opcional)", false);
+            AddField(card, platform, prefix + "BannerAdUnitId", "Banner Ad Unit ID (optional)", false);
 
             return card;
         }
@@ -162,12 +162,12 @@ namespace Wagenheimer.LevelPlayHelper.Editor
             bar.style.flexDirection = FlexDirection.Row;
             bar.style.marginTop = 4;
 
-            var apply = new Button(Apply) { text = "Aplicar no prefab" };
+            var apply = new Button(Apply) { text = "Apply to prefab" };
             apply.style.height = 24;
             apply.style.backgroundColor = new Color(ColOk.r, ColOk.g, ColOk.b, 0.35f);
             bar.Add(apply);
 
-            var revert = new Button(Reload) { text = "Reverter" };
+            var revert = new Button(Reload) { text = "Revert" };
             revert.style.height = 24;
             revert.style.marginLeft = 6;
             bar.Add(revert);
@@ -187,7 +187,7 @@ namespace Wagenheimer.LevelPlayHelper.Editor
 
         VisualElement BuildLegend()
         {
-            var legend = new Label("\u25CF valido   \u25CB vazio/placeholder   ! formato invalido (o SDK rejeita como 'invalid ad unit id')");
+            var legend = new Label("\u25CF valid   \u25CB empty/placeholder   ! invalid format (the SDK rejects it as 'invalid ad unit id')");
             legend.style.fontSize = 9.5f;
             legend.style.color = ColDim;
             legend.style.marginTop = 6;
@@ -221,7 +221,8 @@ namespace Wagenheimer.LevelPlayHelper.Editor
             dirty = value;
             Root.Query<Button>().ForEach(b =>
             {
-                if (b.text == "Aplicar no prefab") b.text = value ? "Aplicar no prefab *" : "Aplicar no prefab";
+                if (b.text == "Apply to prefab" || b.text == "Apply to prefab *")
+                    b.text = value ? "Apply to prefab *" : "Apply to prefab";
             });
         }
 
@@ -244,7 +245,7 @@ namespace Wagenheimer.LevelPlayHelper.Editor
             {
                 if (note != null)
                 {
-                    note.text = property.EndsWith("BannerAdUnitId") ? "vazio (desabilita banner)" : "vazio";
+                    note.text = property.EndsWith("BannerAdUnitId") ? "empty (disables banner)" : "empty";
                     note.style.color = property.EndsWith("BannerAdUnitId") ? ColWarn : ColFail;
                 }
                 if (dot != null && !property.EndsWith("BannerAdUnitId")) dot.style.color = ColFail;

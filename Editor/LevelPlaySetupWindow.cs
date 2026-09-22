@@ -88,8 +88,8 @@ namespace Wagenheimer.LevelPlayHelper.Editor
             titleRow.Add(ToolbarButton("Refresh", RefreshCurrent, ColAccent));
 
             var sub = new Label(
-                "Configure as credenciais (aba Credentials) e valide tudo (aba Checklist). " +
-                "As credenciais vao no prefab do LevelPlayHelper - nao em Ads Mediation > Developer Settings.");
+                "Configure the credentials (Credentials tab) and validate everything (Checklist tab). " +
+                "Credentials live on the LevelPlayHelper prefab - not in Ads Mediation > Developer Settings.");
             sub.style.fontSize = 10;
             sub.style.color = ColDim;
             sub.style.whiteSpace = WhiteSpace.Normal;

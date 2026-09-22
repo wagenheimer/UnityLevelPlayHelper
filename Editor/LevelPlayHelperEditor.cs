@@ -79,17 +79,17 @@ namespace Wagenheimer.LevelPlayHelper.Editor
             if (errors.Count > 0)
             {
                 var sb = new StringBuilder();
-                sb.AppendLine("Credenciais faltando ou invalidas - os anuncios reais NAO vao preencher no device.");
+                sb.AppendLine("Missing or invalid credentials - real ads will NOT fill on device.");
                 foreach (var e in errors) sb.AppendLine("- " + e);
                 sb.AppendLine();
-                sb.AppendLine("Preencha os campos App Key / Ad Unit IDs logo abaixo (Dashboard > Apps / Ad Units).");
+                sb.AppendLine("Fill in the App Key / Ad Unit ID fields below (Dashboard > Apps / Ad Units).");
                 EditorGUILayout.HelpBox(sb.ToString().TrimEnd(), MessageType.Error);
                 DrawCheckerActions();
             }
             else if (warnings.Count > 0)
             {
                 var sb = new StringBuilder();
-                sb.AppendLine("Parcialmente configurado.");
+                sb.AppendLine("Partially configured.");
                 foreach (var w in warnings) sb.AppendLine("- " + w);
                 EditorGUILayout.HelpBox(sb.ToString().TrimEnd(), MessageType.Warning);
                 DrawCheckerActions();
@@ -97,7 +97,7 @@ namespace Wagenheimer.LevelPlayHelper.Editor
             else
             {
                 EditorGUILayout.HelpBox(
-                    "Android e iOS: App Key e Ad Unit IDs configurados. Valide no device (Test Suite) antes de publicar.",
+                    "Android and iOS: App Key and Ad Unit IDs are set. Validate on device (Test Suite) before releasing.",
                     MessageType.Info);
             }
 
@@ -107,7 +107,7 @@ namespace Wagenheimer.LevelPlayHelper.Editor
 
         void EvaluatePlatform(string platform, string prefix, string active, List<string> errors, List<string> warnings)
         {
-            var tag = platform == active ? platform + " (build target atual)" : platform;
+            var tag = platform == active ? platform + " (current build target)" : platform;
 
             var appKey = GetString(prefix + "AppKey");
             var interstitial = GetString(prefix + "InterstitialAdUnitId");
@@ -116,14 +116,14 @@ namespace Wagenheimer.LevelPlayHelper.Editor
 
             // App Key: empty, placeholder or malformed are all hard errors.
             if (!CredentialValidation.IsSet(appKey))
-                errors.Add($"{tag}: App Key vazio (Dashboard > Apps).");
+                errors.Add($"{tag}: App Key is empty (Dashboard > Apps).");
             else if (CredentialValidation.IsPlaceholder(appKey))
-                errors.Add($"{tag}: App Key ainda e um placeholder (Dashboard > Apps).");
+                errors.Add($"{tag}: App Key is still a placeholder (Dashboard > Apps).");
             else
             {
                 var reason = CredentialValidation.DescribeProblem(appKey, true);
                 if (CredentialValidation.IsHardProblem(reason))
-                    errors.Add($"{tag}: App Key invalido - {reason}.");
+                    errors.Add($"{tag}: invalid App Key - {reason}.");
             }
 
             // Ad Unit IDs: none at all is a hard error; a single empty one is a warning.
@@ -133,9 +133,9 @@ namespace Wagenheimer.LevelPlayHelper.Editor
             if (!CredentialValidation.IsSet(banner)) missing.Add("banner");
 
             if (missing.Count == 3)
-                errors.Add($"{tag}: nenhum Ad Unit ID (Dashboard > Ad Units).");
+                errors.Add($"{tag}: no Ad Unit IDs (Dashboard > Ad Units).");
             else if (missing.Count > 0)
-                warnings.Add($"{tag}: sem Ad Unit ID para {string.Join(", ", missing)} - esse formato fica desabilitado nessa plataforma.");
+                warnings.Add($"{tag}: no Ad Unit ID for {string.Join(", ", missing)} - that format is disabled on this platform.");
 
             CheckId(interstitial, "interstitial", tag, errors);
             CheckId(rewarded, "rewarded", tag, errors);
@@ -149,18 +149,18 @@ namespace Wagenheimer.LevelPlayHelper.Editor
 
             var reason = CredentialValidation.DescribeProblem(value, false);
             if (CredentialValidation.IsHardProblem(reason))
-                errors.Add($"{tag}: Ad Unit ID {label} invalido - {reason}.");
+                errors.Add($"{tag}: invalid {label} Ad Unit ID - {reason}.");
         }
 
         void DrawCheckerActions()
         {
             EditorGUILayout.BeginHorizontal();
 
-            if (GUILayout.Button("Abrir Dashboard", GUILayout.Height(22)))
+            if (GUILayout.Button("Open Dashboard", GUILayout.Height(22)))
                 Application.OpenURL(DashboardUrl);
-            if (GUILayout.Button("Abrir Ad Units", GUILayout.Height(22)))
+            if (GUILayout.Button("Open Ad Units", GUILayout.Height(22)))
                 Application.OpenURL(AdUnitsUrl);
-            if (GUILayout.Button("Checklist completo", GUILayout.Height(22)))
+            if (GUILayout.Button("Open Setup & Config", GUILayout.Height(22)))
                 LevelPlaySetupWindow.Open();
 
             EditorGUILayout.EndHorizontal();
@@ -168,7 +168,7 @@ namespace Wagenheimer.LevelPlayHelper.Editor
 
         void DrawCredentialMatrix()
         {
-            EditorGUILayout.LabelField("Resumo - App Key / Ad Units por plataforma", EditorStyles.miniBoldLabel);
+            EditorGUILayout.LabelField("Summary - App Key / Ad Units per platform", EditorStyles.miniBoldLabel);
             EditorGUI.indentLevel++;
             DrawPlatformRow("Android", "android");
             DrawPlatformRow("iOS", "ios");
