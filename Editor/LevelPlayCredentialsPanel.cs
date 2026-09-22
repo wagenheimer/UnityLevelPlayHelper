@@ -31,6 +31,8 @@ namespace Wagenheimer.LevelPlayHelper.Editor
 
         public VisualElement Root { get; }
 
+        VisualElement body;
+        Label validationLabel;
         LevelPlayHelper helper;
         SerializedObject serialized;
         readonly List<Field> fields = new List<Field>();
@@ -38,23 +40,31 @@ namespace Wagenheimer.LevelPlayHelper.Editor
         public LevelPlayCredentialsPanel()
         {
             Root = new VisualElement();
-            Root.style.paddingTop = 10;
-            Root.style.paddingBottom = 10;
-            Root.style.paddingLeft = 12;
-            Root.style.paddingRight = 12;
+            Root.style.flexGrow = 1;
+
+            var scroll = new ScrollView(ScrollViewMode.Vertical);
+            scroll.style.flexGrow = 1;
+            Root.Add(scroll);
+
+            body = scroll.contentContainer;
+            body.style.paddingTop = 10;
+            body.style.paddingBottom = 10;
+            body.style.paddingLeft = 2;
+            body.style.paddingRight = 14;
+
             Reload();
         }
 
         public void Reload()
         {
-            Root.Clear();
+            body.Clear();
             fields.Clear();
 
             helper = LevelPlayHelperLocator.FindPreferred();
 
             if (helper == null)
             {
-                Root.Add(Info("No LevelPlayHelper found",
+                body.Add(Info("No LevelPlayHelper found",
                     "No prefab or open scene contains the LevelPlayHelper component. Create the prefab " +
                     "(Assets/Resources/Monetization/LevelPlayHelper.prefab) and it will show up here for configuration.", ColFail));
                 return;
@@ -62,14 +72,22 @@ namespace Wagenheimer.LevelPlayHelper.Editor
 
             serialized = new SerializedObject(helper);
 
-            Root.Add(Info("LevelPlayHelper credentials",
+            body.Add(Info("LevelPlayHelper credentials",
                 "These values are written to the prefab " + LevelPlayHelperLocator.LocationOf(helper) +
                 " - the object the runtime instantiates. These are NOT the Ads Mediation > Developer Settings.", ColAccent));
 
-            Root.Add(PlatformCard("Android", "android"));
-            Root.Add(PlatformCard("iOS", "ios"));
-            Root.Add(BuildActions());
-            Root.Add(BuildLegend());
+            body.Add(PlatformCard("Android", "android"));
+            body.Add(PlatformCard("iOS", "ios"));
+            body.Add(BuildActions());
+
+            validationLabel = new Label();
+            validationLabel.style.fontSize = 11;
+            validationLabel.style.whiteSpace = WhiteSpace.Normal;
+            validationLabel.style.marginTop = 6;
+            validationLabel.style.marginBottom = 4;
+            body.Add(validationLabel);
+
+            body.Add(BuildLegend());
 
             Validate();
         }
@@ -162,27 +180,36 @@ namespace Wagenheimer.LevelPlayHelper.Editor
             bar.style.flexDirection = FlexDirection.Row;
             bar.style.marginTop = 4;
 
-            var apply = new Button(Apply) { text = "Apply to prefab" };
-            apply.style.height = 24;
+            bar.style.flexWrap = Wrap.Wrap;
+
+            var check = SmallButton("Check credentials", CheckAll);
+            check.style.backgroundColor = new Color(ColAccent.r, ColAccent.g, ColAccent.b, 0.35f);
+            bar.Add(check);
+
+            var apply = SmallButton("Apply to prefab", Apply);
             apply.style.backgroundColor = new Color(ColOk.r, ColOk.g, ColOk.b, 0.35f);
             bar.Add(apply);
 
-            var revert = new Button(Reload) { text = "Revert" };
-            revert.style.height = 24;
-            revert.style.marginLeft = 6;
-            bar.Add(revert);
-
-            var dashboard = new Button(() => Application.OpenURL(DashboardUrl)) { text = "Dashboard" };
-            dashboard.style.height = 24;
-            dashboard.style.marginLeft = 6;
-            bar.Add(dashboard);
-
-            var adUnits = new Button(() => Application.OpenURL(AdUnitsUrl)) { text = "Ad Units" };
-            adUnits.style.height = 24;
-            adUnits.style.marginLeft = 6;
-            bar.Add(adUnits);
+            bar.Add(SmallButton("Revert", Reload));
+            bar.Add(SmallButton("Open Dashboard", () => Application.OpenURL(DashboardUrl)));
+            bar.Add(SmallButton("Open Ad Units", () => Application.OpenURL(AdUnitsUrl)));
 
             return bar;
+        }
+
+        // The default Button style grows to fill its container, which made every button span the
+        // whole inspector; zero the grow and let it size to its label.
+        static Button SmallButton(string text, Action clicked)
+        {
+            var button = new Button(clicked) { text = text };
+            button.style.height = 24;
+            button.style.flexGrow = 0;
+            button.style.alignSelf = Align.FlexStart;
+            button.style.marginRight = 6;
+            button.style.marginBottom = 4;
+            button.style.paddingLeft = 12;
+            button.style.paddingRight = 12;
+            return button;
         }
 
         VisualElement BuildLegend()
@@ -234,6 +261,61 @@ namespace Wagenheimer.LevelPlayHelper.Editor
                 var dot = Root.Q<Label>("dot-" + field.Property);
                 ValidateField(field.Property, field.Input.value, field.IsAppKey, note, dot);
             }
+        }
+
+        // Explicit "does everything validate?" pass over every credential, with a summary.
+        void CheckAll()
+        {
+            Validate();
+
+            var problems = new List<string>();
+            var warnings = new List<string>();
+
+            foreach (var field in fields)
+            {
+                var value = field.Input.value;
+                var optional = field.Property.EndsWith("BannerAdUnitId");
+
+                if (!CredentialValidation.IsSet(value))
+                {
+                    if (optional) warnings.Add(field.Label + ": empty (banner disabled)");
+                    else problems.Add(field.Label + ": empty");
+                    continue;
+                }
+
+                if (CredentialValidation.IsPlaceholder(value))
+                {
+                    problems.Add(field.Label + ": placeholder value");
+                    continue;
+                }
+
+                var reason = CredentialValidation.DescribeProblem(value, field.IsAppKey);
+                if (CredentialValidation.IsHardProblem(reason)) problems.Add(field.Label + ": " + reason);
+                else if (reason != null) warnings.Add(field.Label + ": " + reason);
+            }
+
+            if (problems.Count == 0 && warnings.Count == 0)
+            {
+                SetValidation("OK - every credential is valid.", ColOk);
+                return;
+            }
+
+            if (problems.Count == 0)
+            {
+                SetValidation("Valid, with warnings:\n- " + string.Join("\n- ", warnings), ColWarn);
+                return;
+            }
+
+            var text = "Problems found:\n- " + string.Join("\n- ", problems);
+            if (warnings.Count > 0) text += "\nWarnings:\n- " + string.Join("\n- ", warnings);
+            SetValidation(text, ColFail);
+        }
+
+        void SetValidation(string text, Color color)
+        {
+            if (validationLabel == null) return;
+            validationLabel.text = text;
+            validationLabel.style.color = color;
         }
 
         static void ValidateField(string property, string value, bool isAppKey, Label note, Label dot)

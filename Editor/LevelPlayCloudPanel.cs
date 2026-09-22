@@ -26,8 +26,10 @@ namespace Wagenheimer.LevelPlayHelper.Editor
         static readonly Color ColText = new Color(0.850f, 0.850f, 0.850f);
 
         static readonly string[] DefaultNetworks = { "ironSource", "unityAds" };
+        static readonly string[] Formats = { "rewarded", "interstitial", "banner" };
 
         public VisualElement Root { get; }
+        VisualElement body;
 
         readonly List<LevelPlayApiClient.AppDto> apps = new List<LevelPlayApiClient.AppDto>();
         LevelPlayApiClient.AppDto androidApp;
@@ -39,10 +41,10 @@ namespace Wagenheimer.LevelPlayHelper.Editor
         VisualElement appsHost;
         VisualElement unitsHost;
         VisualElement createHost;
+        VisualElement networksHost;
         TextField secretField;
         TextField refreshField;
 
-        // "Create application" form state
         bool createLiveApp;
         string newAppName = "";
         string newAppPlatform = "Android";
@@ -53,10 +55,15 @@ namespace Wagenheimer.LevelPlayHelper.Editor
         public LevelPlayCloudPanel()
         {
             Root = new VisualElement();
-            Root.style.paddingTop = 10;
-            Root.style.paddingBottom = 10;
-            Root.style.paddingLeft = 12;
-            Root.style.paddingRight = 12;
+            Root.style.flexGrow = 1;
+
+            var scroll = new ScrollView(ScrollViewMode.Vertical);
+            scroll.style.flexGrow = 1;
+            Root.Add(scroll);
+            body = scroll.contentContainer;
+            body.style.paddingLeft = 2;
+            body.style.paddingRight = 14;
+
             Build();
         }
 
@@ -64,77 +71,277 @@ namespace Wagenheimer.LevelPlayHelper.Editor
 
         void Build()
         {
-            Root.Clear();
+            body.Clear();
 
-            Root.Add(Section("API credentials",
-                "Account-level secrets from LevelPlay > My Account > API. Stored in EditorPrefs on this machine only - never written to the project or logged."));
+            BuildCredentials();
+            BuildApplications();
+            BuildCreateApp();
+            BuildAdUnits();
+            BuildNetworks();
+        }
+
+        void BuildCredentials()
+        {
+            AddSection("API credentials",
+                "Account-level secrets from LevelPlay > My Account > API. Stored in EditorPrefs on this machine only - never written to the project or logged.");
 
             secretField = CredentialField("Secret Key");
             refreshField = CredentialField("Refresh Token");
-            Root.Add(secretField);
-            Root.Add(refreshField);
+            body.Add(secretField);
+            body.Add(refreshField);
 
             storedLabel = new Label();
             storedLabel.style.fontSize = 10;
             storedLabel.style.color = ColDim;
             storedLabel.style.marginTop = 2;
-            Root.Add(storedLabel);
+            body.Add(storedLabel);
 
-            var actions = Row();
-            actions.Add(Primary("Connect", ConnectAsync));
-            actions.Add(Secondary("Clear", () =>
-            {
-                LevelPlayApiCredentials.Clear();
-                LevelPlayApiClient.InvalidateToken();
-                secretField.value = "";
-                refreshField.value = "";
-                UpdateStoredLabel();
-                SetStatus("Credentials cleared.", ColDim);
-            }));
-            Root.Add(actions);
+            var actions = ButtonRow(
+                Action("Connect", ConnectAsync, true),
+                Action("Clear", ClearCredentials));
+            body.Add(actions);
 
             statusLabel = new Label();
             statusLabel.style.fontSize = 10.5f;
             statusLabel.style.color = ColDim;
-            statusLabel.style.marginTop = 4;
-            Root.Add(statusLabel);
+            statusLabel.style.marginTop = 6;
+            statusLabel.style.whiteSpace = WhiteSpace.Normal;
+            body.Add(statusLabel);
 
             UpdateStoredLabel();
+        }
 
-            Root.Add(Section("Applications",
-                "Fetch your apps, then apply the per-platform App Key to the helper prefab."));
-            Root.Add(Primary("Fetch applications", FetchApplicationsAsync));
+        void BuildApplications()
+        {
+            AddSection("Applications",
+                "Fetch your apps, then apply the per-platform App Key to the helper prefab.");
+
+            body.Add(ButtonRow(Action("Fetch applications", FetchApplicationsAsync, true)));
+
             appsHost = new VisualElement();
-            Root.Add(appsHost);
-
-            BuildCreateApp();
-
-            Root.Add(Section("Ad units",
-                "Fetch the ad units of each app and apply the IDs to the helper prefab. Create the missing formats in one click."));
-            var unitActions = Row();
-            unitActions.Add(Secondary("Fetch ad units", FetchAdUnitsAsync));
-            unitActions.Add(Secondary("Apply Ad Unit IDs", ApplyAdUnitIds));
-            unitActions.Add(Secondary("Create missing ad units", CreateMissingAdUnitsAsync));
-            Root.Add(unitActions);
-            unitsHost = new VisualElement();
-            Root.Add(unitsHost);
-
-            Root.Add(Section("Networks",
-                "Mediation only fills when the ad unit has at least one active network. Enable the default pair (ironSource + UnityAds) for every used format."));
-            Root.Add(Primary("Enable default networks", EnableDefaultNetworks));
+            appsHost.style.marginTop = 6;
+            body.Add(appsHost);
 
             RenderApps();
+        }
+
+        void BuildCreateApp()
+        {
+            AddSection("Create application",
+                "For a new game: create the app on the LevelPlay dashboard - either not published yet (name + platform) or already on the store (store URL + taxonomy).");
+
+            var mode = new Toggle("Already published on the store") { value = createLiveApp };
+            mode.RegisterValueChangedCallback(e =>
+            {
+                createLiveApp = e.newValue;
+                RenderCreateFields();
+            });
+            body.Add(mode);
+
+            createHost = new VisualElement();
+            body.Add(createHost);
+
+            RenderCreateFields();
+        }
+
+        void BuildAdUnits()
+        {
+            AddSection("Ad units",
+                "Fetch the ad units of each app and apply the IDs to the helper prefab. Create the missing formats in one click.");
+
+            body.Add(ButtonRow(
+                Action("Fetch ad units", FetchAdUnitsAsync, true),
+                Action("Apply Ad Unit IDs", ApplyAdUnitIds),
+                Action("Create missing ad units", CreateMissingAdUnitsAsync)));
+
+            unitsHost = new VisualElement();
+            unitsHost.style.marginTop = 6;
+            body.Add(unitsHost);
+
             RenderUnits();
         }
 
-        // The value is never echoed back: the field starts empty and only an explicit paste is
-        // saved. An empty field keeps whatever is already stored for that key.
+        void BuildNetworks()
+        {
+            AddSection("Networks (mediation instances)",
+                "Do you need this? Every ad unit must have at least one ACTIVE network, otherwise it has no demand and never fills. " +
+                "Check the list below: if a format already shows active networks, you can skip this. " +
+                "Only formats showing \"no active networks\" need the button.");
+
+            var note = new Label(
+                "What the button does: it creates/activates the default pair (ironSource + UnityAds) for every ad unit of the selected apps, " +
+                "on the LevelPlay dashboard.\n" +
+                "Apps not live in the store: the platform creates the instances as inactive; they activate once the app is published.");
+            note.style.fontSize = 10;
+            note.style.color = ColDim;
+            note.style.whiteSpace = WhiteSpace.Normal;
+            note.style.marginBottom = 4;
+            body.Add(note);
+
+            body.Add(ButtonRow(Action("Enable default networks", EnableDefaultNetworks, true)));
+
+            networksHost = new VisualElement();
+            networksHost.style.marginTop = 6;
+            body.Add(networksHost);
+
+            RenderNetworks();
+        }
+
+        void RenderNetworks()
+        {
+            if (networksHost == null) return;
+            networksHost.Clear();
+
+            foreach (var prefix in new[] { "android", "ios" })
+            {
+                var app = prefix == "android" ? androidApp : iosApp;
+                if (app == null) continue;
+
+                var platform = prefix == "android" ? "Android" : "iOS";
+
+                var title = new Label($"{platform} - {app.appName}");
+                title.style.fontSize = 11;
+                title.style.unityFontStyleAndWeight = FontStyle.Bold;
+                title.style.color = ColText;
+                title.style.marginTop = 6;
+                networksHost.Add(title);
+
+                var anyMissing = false;
+
+                foreach (var format in Formats)
+                {
+                    var networks = ActiveNetworks(app, format);
+                    var active = networks != null && networks.Any(n => !string.IsNullOrEmpty(n));
+                    if (!active) anyMissing = true;
+
+                    var row = new VisualElement();
+                    row.style.flexDirection = FlexDirection.Row;
+                    row.style.marginTop = 1;
+                    row.style.flexShrink = 0;
+
+                    var dot = new Label(active ? "\u25CF" : "\u25CB");
+                    dot.style.width = 14;
+                    dot.style.color = active ? ColOk : ColFail;
+                    row.Add(dot);
+
+                    var text = active
+                        ? $"{format}: {string.Join(", ", networks.Where(n => !string.IsNullOrEmpty(n)))}"
+                        : $"{format}: no active networks - this format will NOT fill";
+                    var label = new Label(text);
+                    label.style.fontSize = 10.5f;
+                    label.style.color = active ? ColText : ColFail;
+                    row.Add(label);
+
+                    networksHost.Add(row);
+                }
+
+                if (anyMissing)
+                {
+                    var fix = new Label("Click \"Enable default networks\" above to add ironSource + UnityAds to the formats marked above.");
+                    fix.style.fontSize = 10;
+                    fix.style.color = ColWarn;
+                    fix.style.whiteSpace = WhiteSpace.Normal;
+                    fix.style.marginTop = 2;
+                    networksHost.Add(fix);
+                }
+            }
+        }
+
+        static string[] ActiveNetworks(LevelPlayApiClient.AppDto app, string format)
+        {
+            var units = app?.adUnits;
+            if (units == null) return null;
+
+            switch (format)
+            {
+                case "rewarded": return units.rewardedVideo?.activeNetworks;
+                case "interstitial": return units.interstitial?.activeNetworks;
+                case "banner": return units.banner?.activeNetworks;
+                default: return null;
+            }
+        }
+
+        void AddSection(string title, string subtitle)
+        {
+            var box = new VisualElement();
+            box.style.marginTop = 14;
+            box.style.marginBottom = 6;
+            box.style.flexShrink = 0;
+
+            var t = new Label(title);
+            t.style.unityFontStyleAndWeight = FontStyle.Bold;
+            t.style.fontSize = 12.5f;
+            t.style.color = ColText;
+            t.style.marginBottom = 2;
+            box.Add(t);
+
+            var s = new Label(subtitle);
+            s.style.fontSize = 10.5f;
+            s.style.color = ColDim;
+            s.style.whiteSpace = WhiteSpace.Normal;
+            box.Add(s);
+
+            body.Add(box);
+        }
+
+        // ------------------------------------------------------------ widget helpers
+
         static TextField CredentialField(string label)
         {
             var field = new TextField(label);
             field.tooltip = "Paste the value. Leave blank to keep the value already stored on this machine.";
             field.style.marginBottom = 2;
+            field.style.flexShrink = 0;
             return field;
+        }
+
+        static VisualElement ButtonRow(params VisualElement[] buttons)
+        {
+            var row = new VisualElement();
+            row.style.flexDirection = FlexDirection.Row;
+            row.style.flexWrap = Wrap.Wrap;
+            row.style.marginTop = 4;
+            row.style.flexShrink = 0;
+
+            foreach (var button in buttons) row.Add(button);
+
+            return row;
+        }
+
+        static Button Action(string text, Action clicked, bool primary = false)
+        {
+            var button = new Button(clicked) { text = text };
+            button.style.height = 24;
+            button.style.flexGrow = 0;                 // default Button style grows to fill
+            button.style.alignSelf = Align.FlexStart;
+            button.style.marginRight = 6;
+            button.style.marginBottom = 4;
+            button.style.paddingLeft = 12;
+            button.style.paddingRight = 12;
+            if (primary)
+            {
+                button.style.backgroundColor = new Color(ColAccent.r, ColAccent.g, ColAccent.b, 0.35f);
+                button.style.color = ColText;
+            }
+            return button;
+        }
+
+        static Label Hint(string text)
+        {
+            var label = new Label(text);
+            label.style.fontSize = 10;
+            label.style.color = ColDim;
+            label.style.whiteSpace = WhiteSpace.Normal;
+            label.style.marginTop = 2;
+            label.style.marginBottom = 4;
+            return label;
+        }
+
+        void SetStatus(string text, Color color)
+        {
+            if (statusLabel == null) return;
+            statusLabel.text = text;
+            statusLabel.style.color = color;
         }
 
         void UpdateStoredLabel()
@@ -147,61 +354,17 @@ namespace Wagenheimer.LevelPlayHelper.Editor
             storedLabel.style.color = LevelPlayApiCredentials.HasCredentials ? ColOk : ColDim;
         }
 
-        VisualElement Section(string title, string subtitle)
-        {
-            var box = new VisualElement();
-            box.style.marginTop = 10;
-            box.style.marginBottom = 4;
-
-            var t = new Label(title);
-            t.style.unityFontStyleAndWeight = FontStyle.Bold;
-            t.style.fontSize = 12.5f;
-            t.style.color = ColText;
-            box.Add(t);
-
-            var s = new Label(subtitle);
-            s.style.fontSize = 10;
-            s.style.color = ColDim;
-            s.style.whiteSpace = WhiteSpace.Normal;
-            box.Add(s);
-
-            return box;
-        }
-
-        static VisualElement Row()
-        {
-            var row = new VisualElement();
-            row.style.flexDirection = FlexDirection.Row;
-            row.style.marginTop = 4;
-            return row;
-        }
-
-        static Button Primary(string text, Action clicked)
-        {
-            var b = new Button(clicked) { text = text };
-            b.style.height = 24;
-            b.style.marginRight = 6;
-            b.style.backgroundColor = new Color(ColAccent.r, ColAccent.g, ColAccent.b, 0.35f);
-            b.style.color = ColText;
-            return b;
-        }
-
-        static Button Secondary(string text, Action clicked)
-        {
-            var b = new Button(clicked) { text = text };
-            b.style.height = 24;
-            b.style.marginRight = 6;
-            return b;
-        }
-
-        void SetStatus(string text, Color color)
-        {
-            if (statusLabel == null) return;
-            statusLabel.text = text;
-            statusLabel.style.color = color;
-        }
-
         // ------------------------------------------------------------ credentials / auth
+
+        void ClearCredentials()
+        {
+            LevelPlayApiCredentials.Clear();
+            LevelPlayApiClient.InvalidateToken();
+            secretField.value = "";
+            refreshField.value = "";
+            UpdateStoredLabel();
+            SetStatus("Credentials cleared.", ColDim);
+        }
 
         async void ConnectAsync()
         {
@@ -231,7 +394,7 @@ namespace Wagenheimer.LevelPlayHelper.Editor
                 result.Ok ? ColOk : ColFail);
         }
 
-        // ------------------------------------------------------------ apps
+        // ------------------------------------------------------------ applications
 
         async void FetchApplicationsAsync()
         {
@@ -250,6 +413,7 @@ namespace Wagenheimer.LevelPlayHelper.Editor
             iosApp = MatchApp("iOS");
 
             RenderApps();
+            RenderNetworks();
             SetStatus($"Fetched {apps.Count} application(s).", ColOk);
         }
 
@@ -294,8 +458,7 @@ namespace Wagenheimer.LevelPlayHelper.Editor
 
             appsHost.Add(AppPicker("Android", "android", () => androidApp, a => androidApp = a));
             appsHost.Add(AppPicker("iOS", "ios", () => iosApp, a => iosApp = a));
-
-            appsHost.Add(Secondary("Apply App Keys to helper prefab", ApplyAppKeys));
+            appsHost.Add(ButtonRow(Action("Apply App Keys to helper prefab", ApplyAppKeys)));
         }
 
         VisualElement AppPicker(string platform, string prefix, Func<LevelPlayApiClient.AppDto> get, Action<LevelPlayApiClient.AppDto> set)
@@ -304,29 +467,31 @@ namespace Wagenheimer.LevelPlayHelper.Editor
             var current = get();
 
             var box = new VisualElement();
-            box.style.marginTop = 6;
+            box.style.marginTop = 8;
+            box.style.flexShrink = 0;
 
-            var label = new Label(platform + "  (local bundle id: " + (string.IsNullOrEmpty(BundleIdFor(platform)) ? "?" : BundleIdFor(platform)) + ")");
+            var bundle = BundleIdFor(platform);
+            var label = new Label($"{platform}  (project bundle id: {(string.IsNullOrEmpty(bundle) ? "?" : bundle)})");
             label.style.fontSize = 10.5f;
             label.style.color = ColDim;
             box.Add(label);
 
             if (candidates.Count == 0)
             {
-                box.Add(Hint("No " + platform + " application found on the account."));
+                box.Add(Hint($"No {platform} application found on the account."));
                 return box;
             }
 
             var names = candidates.Select(a => $"{a.appName}  [{a.appKey}]  {a.bundleId}").ToList();
             var dropdown = new DropdownField(names, Mathf.Max(0, candidates.IndexOf(current)));
             dropdown.style.marginTop = 2;
+            dropdown.style.flexShrink = 0;
             dropdown.RegisterValueChangedCallback(_ => set(candidates[dropdown.index]));
             box.Add(dropdown);
 
-            var expected = BundleIdFor(platform);
-            if (current != null && !string.IsNullOrEmpty(expected) && !string.Equals(current.bundleId, expected, StringComparison.OrdinalIgnoreCase))
+            if (current != null && !string.IsNullOrEmpty(bundle) && !string.Equals(current.bundleId, bundle, StringComparison.OrdinalIgnoreCase))
             {
-                var warn = new Label("Bundle id does not match the project (" + current.bundleId + " != " + expected + ") - make sure this is the right app.");
+                var warn = new Label($"Bundle id does not match the project ({current.bundleId} != {bundle}) - make sure this is the right app.");
                 warn.style.fontSize = 10;
                 warn.style.color = ColWarn;
                 warn.style.whiteSpace = WhiteSpace.Normal;
@@ -350,25 +515,6 @@ namespace Wagenheimer.LevelPlayHelper.Editor
 
         // ------------------------------------------------------------ create application
 
-        void BuildCreateApp()
-        {
-            Root.Add(Section("Create application",
-                "For a new game: create the app on the LevelPlay dashboard. Not published yet (name + platform) or already on the store (store URL + taxonomy)."));
-
-            var mode = new Toggle("Already published on the store") { value = createLiveApp };
-            mode.RegisterValueChangedCallback(e =>
-            {
-                createLiveApp = e.newValue;
-                RenderCreateFields();
-            });
-            Root.Add(mode);
-
-            createHost = new VisualElement();
-            Root.Add(createHost);
-
-            RenderCreateFields();
-        }
-
         void RenderCreateFields()
         {
             if (createHost == null) return;
@@ -386,6 +532,7 @@ namespace Wagenheimer.LevelPlayHelper.Editor
 
                 var platforms = new List<string> { "Android", "iOS" };
                 var dropdown = new DropdownField("Platform", platforms, Mathf.Max(0, platforms.IndexOf(newAppPlatform)));
+                dropdown.style.flexShrink = 0;
                 dropdown.RegisterValueChangedCallback(e => newAppPlatform = e.newValue);
                 createHost.Add(dropdown);
                 createHost.Add(Hint("App not live: the platform creates its instances as inactive until it is published."));
@@ -395,12 +542,14 @@ namespace Wagenheimer.LevelPlayHelper.Editor
             coppa.RegisterValueChangedCallback(e => newCoppa = e.newValue);
             createHost.Add(coppa);
 
-            createHost.Add(Primary("Create application", CreateApplicationAsync));
+            createHost.Add(ButtonRow(Action("Create application", CreateApplicationAsync, true)));
         }
 
         static void AddText(VisualElement parent, string label, string value, Action<string> set)
         {
             var field = new TextField(label) { value = value };
+            field.style.marginBottom = 2;
+            field.style.flexShrink = 0;
             field.RegisterValueChangedCallback(e => set(e.newValue));
             parent.Add(field);
         }
@@ -488,28 +637,34 @@ namespace Wagenheimer.LevelPlayHelper.Editor
                 var app = prefix == "android" ? androidApp : iosApp;
                 if (app == null) continue;
 
+                var platform = prefix == "android" ? "Android" : "iOS";
+
                 if (!unitsByApp.TryGetValue(prefix, out var units))
                 {
-                    unitsHost.Add(Hint((prefix == "android" ? "Android" : "iOS") + ": ad units not fetched yet."));
+                    unitsHost.Add(Hint(platform + ": ad units not fetched yet."));
                     continue;
                 }
 
-                var title = new Label((prefix == "android" ? "Android" : "iOS") + " - " + app.appName + " (" + units.Count + " ad units)");
+                var title = new Label($"{platform} - {app.appName}  ({units.Count} ad units)");
                 title.style.fontSize = 11;
                 title.style.unityFontStyleAndWeight = FontStyle.Bold;
                 title.style.color = ColText;
-                title.style.marginTop = 6;
+                title.style.marginTop = 8;
                 unitsHost.Add(title);
 
                 foreach (var unit in units)
                 {
-                    var row = Row();
+                    var row = new VisualElement();
+                    row.style.flexDirection = FlexDirection.Row;
+                    row.style.marginTop = 1;
+                    row.style.flexShrink = 0;
+
                     var dot = new Label(unit.isPaused ? "\u25CB" : "\u25CF");
                     dot.style.width = 14;
                     dot.style.color = unit.isPaused ? ColWarn : ColOk;
                     row.Add(dot);
 
-                    var l = new Label($"{unit.adFormat,-13} {unit.mediationAdUnitId}  {unit.mediationAdUnitName}" + (unit.isPaused ? "  (PAUSED)" : ""));
+                    var l = new Label($"{unit.adFormat,-13} {unit.mediationAdUnitId}   {unit.mediationAdUnitName}{(unit.isPaused ? "   (PAUSED)" : "")}");
                     l.style.fontSize = 10.5f;
                     l.style.color = unit.isPaused ? ColWarn : ColText;
                     row.Add(l);
@@ -523,6 +678,7 @@ namespace Wagenheimer.LevelPlayHelper.Editor
                     var warn = new Label("Missing formats: " + string.Join(", ", missing));
                     warn.style.fontSize = 10;
                     warn.style.color = ColWarn;
+                    warn.style.marginTop = 2;
                     unitsHost.Add(warn);
                 }
             }
@@ -531,7 +687,7 @@ namespace Wagenheimer.LevelPlayHelper.Editor
         static List<string> MissingFormats(List<LevelPlayApiClient.AdUnitDto> units)
         {
             var result = new List<string>();
-            foreach (var format in new[] { "rewarded", "interstitial", "banner" })
+            foreach (var format in Formats)
                 if (!units.Any(u => string.Equals(u.adFormat, format, StringComparison.OrdinalIgnoreCase)))
                     result.Add(format);
             return result;
@@ -632,9 +788,11 @@ namespace Wagenheimer.LevelPlayHelper.Editor
                 return;
             }
 
-            if (!EditorUtility.DisplayDialog("Enable networks",
-                "Create/activate the default network instances (ironSource + UnityAds) for every ad unit on the LevelPlay dashboard?\n\n" +
-                "Note: for apps that are not live in the store the platform creates the instances as inactive.",
+            if (!EditorUtility.DisplayDialog("Enable default networks",
+                "Add the default networks (ironSource + UnityAds) to every ad unit of the selected apps, on the LevelPlay dashboard?\n\n" +
+                "Use this for the formats that currently show \"no active networks\" - an ad unit with no active network has no demand and never fills.\n\n" +
+                "This writes to your LevelPlay account. Apps not live in the store get the instances created as inactive.\n\n" +
+                "Continue?",
                 "Enable", "Cancel"))
                 return;
 
@@ -645,10 +803,9 @@ namespace Wagenheimer.LevelPlayHelper.Editor
         {
             foreach (var (prefix, app) in targets)
             {
-                var units = unitsByApp[prefix];
                 var requests = new List<LevelPlayApiClient.InstanceRequest>();
 
-                foreach (var unit in units)
+                foreach (var unit in unitsByApp[prefix])
                 {
                     var format = (unit.adFormat ?? "").ToLowerInvariant();
                     if (format != "rewarded" && format != "interstitial" && format != "banner") continue;
@@ -696,15 +853,6 @@ namespace Wagenheimer.LevelPlayHelper.Editor
             so.ApplyModifiedProperties();
             EditorUtility.SetDirty(helper);
             AssetDatabase.SaveAssets();
-        }
-
-        static Label Hint(string text)
-        {
-            var label = new Label(text);
-            label.style.fontSize = 10;
-            label.style.color = ColDim;
-            label.style.marginTop = 2;
-            return label;
         }
     }
 }
