@@ -673,6 +673,7 @@ namespace Wagenheimer.LevelPlayHelper.Editor
             CheckTestSuiteFlag();
             CheckPlaceholders();
             CheckCredentialFormat();
+            CheckCloudConsistency();
 
             BeginSection("5 - Android build", "Player settings that the LevelPlay Android SDK requires.");
             CheckAndroidBackend();
@@ -1563,6 +1564,106 @@ namespace Wagenheimer.LevelPlayHelper.Editor
 
                 foreach (var entry in invalid) item.Facts.Add("invalid: " + entry);
                 foreach (var entry in suspect) item.Facts.Add("check length: " + entry);
+            }
+        }
+
+        /// <summary>
+        /// Cross-checks the credentials on the helper against the account state pulled by the Cloud
+        /// tab: the App Key must be an app on the account, every Ad Unit ID must belong to that app
+        /// with the matching format, must not be paused, and must have at least one active network.
+        /// This is what catches the runtime "invalid ad unit id" that no offline check can see.
+        /// </summary>
+        void CheckCloudConsistency()
+        {
+            if (helpers.Count == 0)
+                return;
+
+            if (!LevelPlayCloudCache.HasData)
+            {
+                Add(CheckStatus.Info, "Dashboard cross-check",
+                    "Not verified against the dashboard yet. Open Setup & Config > Cloud (API), fetch applications and ad units, then refresh here.",
+                    null);
+                return;
+            }
+
+            var so = new SerializedObject(helpers[0].Component);
+
+            var problems = new List<string>();
+            var warnings = new List<string>();
+            var verified = 0;
+
+            foreach (var platform in new[] { ("Android", "android"), ("iOS", "ios") })
+            {
+                var label = platform.Item1;
+                var prefix = platform.Item2;
+
+                var appKey = GetString(so, prefix + "AppKey");
+                if (string.IsNullOrEmpty(appKey)) continue;
+
+                var app = LevelPlayCloudCache.FindAppByKey(appKey);
+                if (app == null)
+                {
+                    problems.Add($"{label}: App Key {Mask(appKey)} is not an application on this account.");
+                    continue;
+                }
+
+                var units = LevelPlayCloudCache.UnitsFor(appKey);
+                if (units == null)
+                {
+                    warnings.Add($"{label}: ad units of {app.appName} were not fetched (fetch them in the Cloud tab).");
+                    continue;
+                }
+
+                foreach (var format in new[] { "rewarded", "interstitial", "banner" })
+                {
+                    var id = GetString(so, FormatProperty(prefix, format));
+
+                    if (!string.IsNullOrEmpty(id))
+                    {
+                        var unit = units.FirstOrDefault(u => string.Equals(u.mediationAdUnitId, id, StringComparison.OrdinalIgnoreCase));
+                        if (unit == null)
+                        {
+                            problems.Add($"{label} {format}: Ad Unit ID {Mask(id)} does not belong to {app.appName} - the SDK rejects it as 'invalid ad unit id'.");
+                        }
+                        else
+                        {
+                            verified++;
+                            if (unit.isPaused) warnings.Add($"{label} {format}: the ad unit is PAUSED in the dashboard - it will not fill.");
+                            if (!string.Equals(unit.adFormat, format, StringComparison.OrdinalIgnoreCase))
+                                problems.Add($"{label} {format}: the ID is registered as '{unit.adFormat}' in the dashboard but used as '{format}'.");
+                        }
+                    }
+
+                    var networks = LevelPlayCloudCache.ActiveNetworks(app, format);
+                    if (networks == null || networks.All(string.IsNullOrEmpty))
+                        warnings.Add($"{label} {format}: no active network on the ad unit - no demand, it will not fill.");
+                }
+            }
+
+            var status = problems.Count > 0 ? CheckStatus.Fail
+                : warnings.Count > 0 ? CheckStatus.Warning
+                : CheckStatus.Pass;
+
+            var detail = problems.Count > 0
+                ? "The local credentials do not match the account: those ad units fail or never fill on device."
+                : warnings.Count > 0
+                    ? "The credentials match the account, but something below will keep ads from filling."
+                    : $"Every configured App Key and Ad Unit ID matches the account ({verified} checked).";
+
+            var item = Add(status, "Dashboard cross-check", detail, "https://platform.ironsrc.com/");
+            item.Facts.Add("fetched at: " + LevelPlayCloudCache.LastFetchUtc.ToLocalTime().ToString("yyyy-MM-dd HH:mm"));
+            foreach (var problem in problems) item.Facts.Add("error: " + problem);
+            foreach (var warning in warnings) item.Facts.Add("warning: " + warning);
+        }
+
+        static string FormatProperty(string prefix, string format)
+        {
+            switch (format)
+            {
+                case "rewarded": return prefix + "RewardedAdUnitId";
+                case "interstitial": return prefix + "InterstitialAdUnitId";
+                case "banner": return prefix + "BannerAdUnitId";
+                default: return prefix + "AdUnitId";
             }
         }
 

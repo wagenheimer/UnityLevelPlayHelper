@@ -227,7 +227,7 @@ namespace Wagenheimer.LevelPlayHelper.Editor
 
                 foreach (var format in Formats)
                 {
-                    var networks = ActiveNetworks(app, format);
+                    var networks = LevelPlayCloudCache.ActiveNetworks(app, format);
                     var active = networks != null && networks.Any(n => !string.IsNullOrEmpty(n));
                     if (!active) anyMissing = true;
 
@@ -263,20 +263,6 @@ namespace Wagenheimer.LevelPlayHelper.Editor
                     fix.style.marginTop = 2;
                     networksHost.Add(fix);
                 }
-            }
-        }
-
-        static string[] ActiveNetworks(LevelPlayApiClient.AppDto app, string format)
-        {
-            var units = app?.adUnits;
-            if (units == null) return null;
-
-            switch (format)
-            {
-                case "rewarded": return units.rewardedVideo?.activeNetworks;
-                case "interstitial": return units.interstitial?.activeNetworks;
-                case "banner": return units.banner?.activeNetworks;
-                default: return null;
             }
         }
 
@@ -430,6 +416,7 @@ namespace Wagenheimer.LevelPlayHelper.Editor
 
             apps.Clear();
             apps.AddRange(list);
+            LevelPlayCloudCache.SetApps(list);
             appsFetched = true;
             networksJustEnabled = false;
             androidApp = MatchApp("Android");
@@ -645,6 +632,7 @@ namespace Wagenheimer.LevelPlayHelper.Editor
                 }
 
                 unitsByApp[prefix] = units;
+                LevelPlayCloudCache.SetUnits(app.appKey, units);
             }
 
             RenderUnits();
