@@ -135,6 +135,13 @@ namespace Wagenheimer.LevelPlayHelper.Editor
         }
 
         [Serializable]
+        internal sealed class InstanceUpdate
+        {
+            public int instanceId;
+            public bool isLive;
+        }
+
+        [Serializable]
         internal sealed class InstanceRequest
         {
             public string instanceName;
@@ -239,6 +246,9 @@ namespace Wagenheimer.LevelPlayHelper.Editor
 
         internal static Task<ApiResult> CreateInstancesAsync(string appKey, IEnumerable<InstanceRequest> instances)
             => SendJsonAsync(HttpMethod.Post, InstancesUrl + appKey, ToJsonArray(instances));
+
+        internal static Task<ApiResult> UpdateInstancesAsync(string appKey, IEnumerable<InstanceUpdate> updates)
+            => SendJsonAsync(HttpMethod.Put, InstancesUrl + appKey, ToJsonArray(updates));
 
         // ------------------------------------------------------------ plumbing
 

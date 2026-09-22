@@ -41,7 +41,10 @@ namespace Wagenheimer.LevelPlayHelper.Editor
         VisualElement appsHost;
         VisualElement unitsHost;
         VisualElement createHost;
+        VisualElement createSection;
         VisualElement networksHost;
+        bool appsFetched;
+        bool networksJustEnabled;
         TextField secretField;
         TextField refreshField;
 
@@ -127,8 +130,13 @@ namespace Wagenheimer.LevelPlayHelper.Editor
 
         void BuildCreateApp()
         {
-            AddSection("Create application",
-                "For a new game: create the app on the LevelPlay dashboard - either not published yet (name + platform) or already on the store (store URL + taxonomy).");
+            // Only meaningful when the account has no app yet, so it is hidden as soon as
+            // "Fetch applications" returns something.
+            createSection = new VisualElement();
+            createSection.style.display = DisplayStyle.None;
+
+            createSection.Add(SectionHeader("Create application",
+                "No app found on the account: create it here - either not published yet (name + platform) or already on the store (store URL + taxonomy)."));
 
             var mode = new Toggle("Already published on the store") { value = createLiveApp };
             mode.RegisterValueChangedCallback(e =>
@@ -136,12 +144,21 @@ namespace Wagenheimer.LevelPlayHelper.Editor
                 createLiveApp = e.newValue;
                 RenderCreateFields();
             });
-            body.Add(mode);
+            createSection.Add(mode);
 
             createHost = new VisualElement();
-            body.Add(createHost);
+            createSection.Add(createHost);
 
             RenderCreateFields();
+            body.Add(createSection);
+
+            UpdateCreateVisibility();
+        }
+
+        void UpdateCreateVisibility()
+        {
+            if (createSection == null) return;
+            createSection.style.display = appsFetched && apps.Count == 0 ? DisplayStyle.Flex : DisplayStyle.None;
         }
 
         void BuildAdUnits()
@@ -237,7 +254,9 @@ namespace Wagenheimer.LevelPlayHelper.Editor
 
                 if (anyMissing)
                 {
-                    var fix = new Label("Click \"Enable default networks\" above to add ironSource + UnityAds to the formats marked above.");
+                    var fix = new Label(networksJustEnabled
+                        ? "Still no active network above. A non-default instance only activates after the default one is active, and some networks (e.g. Unity Ads) need their app/instance config in the dashboard - the sourceID / zoneID. Check Dashboard > Ad Units > the ad unit > Instances."
+                        : "Click \"Enable default networks\" above to add ironSource + UnityAds to the formats marked above.");
                     fix.style.fontSize = 10;
                     fix.style.color = ColWarn;
                     fix.style.whiteSpace = WhiteSpace.Normal;
@@ -261,7 +280,9 @@ namespace Wagenheimer.LevelPlayHelper.Editor
             }
         }
 
-        void AddSection(string title, string subtitle)
+        void AddSection(string title, string subtitle) => body.Add(SectionHeader(title, subtitle));
+
+        VisualElement SectionHeader(string title, string subtitle)
         {
             var box = new VisualElement();
             box.style.marginTop = 14;
@@ -281,7 +302,7 @@ namespace Wagenheimer.LevelPlayHelper.Editor
             s.style.whiteSpace = WhiteSpace.Normal;
             box.Add(s);
 
-            body.Add(box);
+            return box;
         }
 
         // ------------------------------------------------------------ widget helpers
@@ -409,11 +430,14 @@ namespace Wagenheimer.LevelPlayHelper.Editor
 
             apps.Clear();
             apps.AddRange(list);
+            appsFetched = true;
+            networksJustEnabled = false;
             androidApp = MatchApp("Android");
             iosApp = MatchApp("iOS");
 
             RenderApps();
             RenderNetworks();
+            UpdateCreateVisibility();
             SetStatus($"Fetched {apps.Count} application(s).", ColOk);
         }
 
@@ -801,9 +825,20 @@ namespace Wagenheimer.LevelPlayHelper.Editor
 
         async Task EnableDefaultNetworksAsync(List<(string prefix, LevelPlayApiClient.AppDto app)> targets)
         {
+            var activated = 0;
+            var created = 0;
+
             foreach (var (prefix, app) in targets)
             {
-                var requests = new List<LevelPlayApiClient.InstanceRequest>();
+                var (read, instances) = await LevelPlayApiClient.GetInstancesAsync(app.appKey);
+                if (!read.Ok)
+                {
+                    SetStatus($"Could not read instances for {app.appName}: {read.Error}", ColFail);
+                    return;
+                }
+
+                var toActivate = new List<LevelPlayApiClient.InstanceUpdate>();
+                var toCreate = new List<LevelPlayApiClient.InstanceRequest>();
 
                 foreach (var unit in unitsByApp[prefix])
                 {
@@ -812,28 +847,59 @@ namespace Wagenheimer.LevelPlayHelper.Editor
 
                     foreach (var network in DefaultNetworks)
                     {
-                        requests.Add(new LevelPlayApiClient.InstanceRequest
+                        var existing = instances.FirstOrDefault(i =>
+                            string.Equals(i.adFormat, unit.adFormat, StringComparison.OrdinalIgnoreCase) &&
+                            string.Equals(i.networkName, network, StringComparison.OrdinalIgnoreCase));
+
+                        if (existing != null)
                         {
-                            instanceName = "Default",
-                            networkName = network,
-                            adFormat = unit.adFormat,
-                            isBidder = false,
-                            isLive = true
-                        });
+                            // The platform already creates a per-unit default instance: activate it
+                            // instead of adding a duplicate (a duplicate is what made only ironSource
+                            // show up before).
+                            if (!existing.isLive)
+                                toActivate.Add(new LevelPlayApiClient.InstanceUpdate { instanceId = existing.instanceId, isLive = true });
+                        }
+                        else
+                        {
+                            toCreate.Add(new LevelPlayApiClient.InstanceRequest
+                            {
+                                instanceName = "LevelPlayHelper",
+                                networkName = network,
+                                adFormat = unit.adFormat,
+                                isBidder = false,
+                                isLive = true
+                            });
+                        }
                     }
                 }
 
-                if (requests.Count == 0) continue;
-
-                var result = await LevelPlayApiClient.CreateInstancesAsync(app.appKey, requests);
-                if (!result.Ok)
+                if (toActivate.Count > 0)
                 {
-                    SetStatus($"Enabling networks failed for {app.appName}: {result.Error}", ColFail);
-                    return;
+                    var result = await LevelPlayApiClient.UpdateInstancesAsync(app.appKey, toActivate);
+                    if (!result.Ok)
+                    {
+                        SetStatus($"Activating instances failed for {app.appName}: {result.Error}", ColFail);
+                        return;
+                    }
+                    activated += toActivate.Count;
+                }
+
+                if (toCreate.Count > 0)
+                {
+                    var result = await LevelPlayApiClient.CreateInstancesAsync(app.appKey, toCreate);
+                    if (!result.Ok)
+                    {
+                        SetStatus($"Creating instances failed for {app.appName}: {result.Error}", ColFail);
+                        return;
+                    }
+                    created += toCreate.Count;
                 }
             }
 
-            SetStatus("Default networks requested for every ad unit.", ColOk);
+            // The dashboard state settles asynchronously, so re-read it instead of assuming.
+            networksJustEnabled = true;
+            SetStatus($"Networks ensured ({activated} activated, {created} created). Refreshing account state...", ColAccent);
+            FetchApplicationsAsync();
         }
 
         // ------------------------------------------------------------ helper writes
