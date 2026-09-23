@@ -5,44 +5,57 @@ using UnityEngine.UIElements;
 namespace Wagenheimer.LevelPlayHelper.Editor
 {
     /// <summary>
-    /// Testing tab: turns the device-only validation helpers on and off with one click - the
-    /// LevelPlay Test Suite, the in-game debug overlay and the Development Build flag - writing
-    /// straight to the helper prefab / build settings, with the reminder to switch them back off
-    /// before release.
+    /// Testing & Simulation panel: configure device validation (Test Suite),
+    /// in-game diagnostics overlay, editor mock test mode, and development build settings.
     /// </summary>
     internal sealed class LevelPlayTestingPanel
     {
-        static readonly Color ColOk = new Color(0.298f, 0.686f, 0.314f);
-        static readonly Color ColWarn = new Color(1.000f, 0.690f, 0.125f);
-        static readonly Color ColFail = new Color(0.898f, 0.282f, 0.302f);
-        static readonly Color ColDim = new Color(0.650f, 0.650f, 0.650f);
-        static readonly Color ColAccent = new Color(0.290f, 0.565f, 0.851f);
-        static readonly Color ColText = new Color(0.850f, 0.850f, 0.850f);
+        const string TestSuiteDocsUrl = "https://docs.unity.com/en-us/grow/levelplay/sdk/unity/test-suite";
 
         public VisualElement Root { get; }
 
-        VisualElement body;
-        Label testSuiteStatus;
+        readonly ScrollView scroll;
+        readonly VisualElement body;
+        SerializedObject serializedObject;
+        LevelPlayHelper helper;
+
+        Label testSuiteBadge;
+        Label overlayBadge;
+        Label editorMockBadge;
+
         Toggle testSuiteToggle;
         Toggle overlayToggle;
-        Toggle developmentBuildToggle;
+        Toggle editorMockToggle;
+        Toggle devBuildToggle;
 
-        bool loading;
+        bool isReloading;
 
-        public LevelPlayTestingPanel()
+        public LevelPlayTestingPanel(SerializedObject serialized = null)
         {
             Root = new VisualElement();
-            Root.style.flexGrow = 1;
+            Root.AddToClassList("lp-root");
+            LevelPlayUIStyle.Apply(Root);
 
-            var scroll = new ScrollView(ScrollViewMode.Vertical);
+            scroll = new ScrollView(ScrollViewMode.Vertical);
             scroll.style.flexGrow = 1;
             Root.Add(scroll);
 
             body = scroll.contentContainer;
-            body.style.paddingTop = 10;
-            body.style.paddingBottom = 10;
-            body.style.paddingLeft = 2;
-            body.style.paddingRight = 14;
+            SetTarget(serialized);
+        }
+
+        public void SetTarget(SerializedObject serialized)
+        {
+            if (serialized != null && serialized.targetObject is LevelPlayHelper h)
+            {
+                serializedObject = serialized;
+                helper = h;
+            }
+            else
+            {
+                helper = LevelPlayHelperLocator.FindPreferred();
+                serializedObject = helper != null ? new SerializedObject(helper) : null;
+            }
 
             Reload();
         }
@@ -51,245 +64,167 @@ namespace Wagenheimer.LevelPlayHelper.Editor
         {
             body.Clear();
 
-            var helper = LevelPlayHelperLocator.FindPreferred();
-            if (helper == null)
+            if (helper == null || serializedObject == null)
             {
-                body.Add(Info("No LevelPlayHelper found",
-                    "Create the helper prefab (Assets/Resources/Monetization/LevelPlayHelper.prefab) to enable the test helpers.",
-                    ColFail));
+                body.Add(LevelPlayUIStyle.CreateCallout("No LevelPlayHelper found. Please configure on prefab.", "fail"));
                 return;
             }
 
-            var so = new SerializedObject(helper);
+            isReloading = true;
+            serializedObject.Update();
 
-            loading = true;
+            body.Add(LevelPlayUIStyle.CreateCallout(
+                "Use these testing utilities to validate ad formats, callbacks, and impression revenue before releasing to the store.",
+                "info"));
 
-            // ------------------------------------------------------------ Test Suite
-            AddSection("Test Suite (device validation)",
-                "The official LevelPlay Test Suite is the only way to confirm that real ads load and every callback fires. " +
-                "It runs automatically right after initialization on a DEVICE build. Turn it off again before releasing.");
+            body.Add(BuildTestSuiteCard());
+            body.Add(BuildDebugOverlayCard());
+            body.Add(BuildEditorMockCard());
+            body.Add(BuildBuildSettingsCard());
+            body.Add(BuildFooterActions());
 
-            testSuiteToggle = new Toggle("Enable Test Suite on device") { value = GetBool(so, "enableTestSuite") };
-            testSuiteToggle.RegisterValueChangedCallback(e =>
+            isReloading = false;
+        }
+
+        VisualElement BuildTestSuiteCard()
+        {
+            bool isTestSuiteOn = serializedObject.FindProperty("enableTestSuite")?.boolValue ?? false;
+            testSuiteBadge = LevelPlayUIStyle.CreateBadge(isTestSuiteOn ? "ENABLED" : "Disabled", isTestSuiteOn ? "warn" : "info");
+
+            var card = LevelPlayUIStyle.CreateCard(
+                "LevelPlay Test Suite (Device)",
+                "Automatically launches the official ironSource/LevelPlay Test Suite UI on device startup. TURN OFF BEFORE RELEASE.",
+                testSuiteBadge);
+
+            testSuiteToggle = new Toggle("Enable Test Suite on Device")
             {
-                if (loading) return;
-                SetHelperBool(helper, "enableTestSuite", e.newValue);
-                UpdateTestSuiteStatus(e.newValue);
+                value = isTestSuiteOn,
+                tooltip = "Runs automatically right after LevelPlay.Init succeeds on physical Android/iOS devices."
+            };
+
+            testSuiteToggle.RegisterValueChangedCallback(evt =>
+            {
+                if (isReloading) return;
+                SetHelperProperty("enableTestSuite", evt.newValue);
+                LevelPlayUIStyle.SetBadge(testSuiteBadge, evt.newValue ? "ENABLED" : "Disabled", evt.newValue ? "warn" : "info");
             });
-            body.Add(testSuiteToggle);
 
-            testSuiteStatus = new Label();
-            testSuiteStatus.style.fontSize = 10.5f;
-            testSuiteStatus.style.whiteSpace = WhiteSpace.Normal;
-            testSuiteStatus.style.marginTop = 2;
-            testSuiteStatus.style.marginBottom = 6;
-            body.Add(testSuiteStatus);
+            card.Add(testSuiteToggle);
+            return card;
+        }
 
-            body.Add(Steps(
-                "How to use it:",
-                "1. Turn the toggle above ON.",
-                "2. Build a Development Build to a real device (Android or iOS).",
-                "3. Run the app - the Test Suite opens by itself after the SDK initializes.",
-                "4. Follow the on-screen tests for each ad format.",
-                "5. Come back here and turn it OFF before you ship."));
+        VisualElement BuildDebugOverlayCard()
+        {
+            bool isOverlayOn = serializedObject.FindProperty("enableDebugOverlay")?.boolValue ?? true;
+            overlayBadge = LevelPlayUIStyle.CreateBadge(isOverlayOn ? "Active" : "Disabled", isOverlayOn ? "ok" : "info");
 
-            // ------------------------------------------------------------ Debug overlay
-            AddSection("In-game debug overlay",
-                "The ADS DBG panel shows SDK state, per-format readiness, load retries and a live ad event log. " +
-                "It is compiled out of release builds, so leaving it on is safe.");
+            var card = LevelPlayUIStyle.CreateCard(
+                "In-Game Diagnostics Overlay (ADS DBG)",
+                "Attaches an in-game debug overlay HUD showing SDK init status, format readiness and live ad event log. Safe in release (auto-stripped).",
+                overlayBadge);
 
-            overlayToggle = new Toggle("Auto-attach the debug overlay") { value = GetBool(so, "enableDebugOverlay", true) };
-            overlayToggle.RegisterValueChangedCallback(e =>
+            overlayToggle = new Toggle("Auto-attach Debug Overlay")
             {
-                if (loading) return;
-                SetHelperBool(helper, "enableDebugOverlay", e.newValue);
+                value = isOverlayOn,
+                tooltip = "Press F8 or tap the 'ADS DBG' button on screen to toggle the overlay in Play mode or Development Builds."
+            };
+
+            overlayToggle.RegisterValueChangedCallback(evt =>
+            {
+                if (isReloading) return;
+                SetHelperProperty("enableDebugOverlay", evt.newValue);
+                LevelPlayUIStyle.SetBadge(overlayBadge, evt.newValue ? "Active" : "Disabled", evt.newValue ? "ok" : "info");
             });
-            body.Add(overlayToggle);
 
-            var overlayHint = new Label("Active in the Editor and in Development Builds. Press F8 (or the ADS DBG button) to toggle the panel in game.");
-            overlayHint.style.fontSize = 10;
-            overlayHint.style.color = ColDim;
-            overlayHint.style.whiteSpace = WhiteSpace.Normal;
-            overlayHint.style.marginBottom = 6;
-            body.Add(overlayHint);
+            card.Add(overlayToggle);
+            return card;
+        }
 
-            // ------------------------------------------------------------ Development Build
-            AddSection("Development Build",
-                "Without it the device build strips the SDK logs, so a failing integration is very hard to diagnose.");
+        VisualElement BuildEditorMockCard()
+        {
+            bool isMockOn = LevelPlayEditorTestMode.Enabled;
+            editorMockBadge = LevelPlayUIStyle.CreateBadge(isMockOn ? "Active" : "Off", isMockOn ? "ok" : "info");
 
-            developmentBuildToggle = new Toggle("Development Build") { value = EditorUserBuildSettings.development };
-            developmentBuildToggle.RegisterValueChangedCallback(e =>
+            var card = LevelPlayUIStyle.CreateCard(
+                "Editor Play Mode Mock Ads",
+                "Temporarily adds project defines so monetization code runs in the Editor with mock ads and fake store without needing physical device.",
+                editorMockBadge);
+
+            editorMockToggle = new Toggle("Enable Mock Ads in Unity Editor")
             {
-                if (loading) return;
-                EditorUserBuildSettings.development = e.newValue;
-                Log("Development Build set to " + e.newValue + ".");
+                value = isMockOn,
+                tooltip = "Automatically handles scripting define symbols and guards against leaking into release builds."
+            };
+
+            editorMockToggle.RegisterValueChangedCallback(evt =>
+            {
+                if (isReloading) return;
+                LevelPlayEditorTestMode.SetEnabled(evt.newValue);
+                LevelPlayUIStyle.SetBadge(editorMockBadge, evt.newValue ? "Active" : "Off", evt.newValue ? "ok" : "info");
             });
-            body.Add(developmentBuildToggle);
 
-            var buildHint = new Label("Remember to turn this off for the store build.");
-            buildHint.style.fontSize = 10;
-            buildHint.style.color = ColDim;
-            buildHint.style.marginBottom = 6;
-            body.Add(buildHint);
+            card.Add(editorMockToggle);
 
-            loading = false;
+            var note = new Label("Build guard protects against accidentally building while Editor Test Mode is enabled.");
+            note.AddToClassList("lp-card-subtitle");
+            note.style.marginTop = 4;
+            card.Add(note);
 
-            UpdateTestSuiteStatus(testSuiteToggle.value);
-            body.Add(BuildActions(helper));
+            return card;
         }
 
-        VisualElement BuildActions(LevelPlayHelper helper)
+        VisualElement BuildBuildSettingsCard()
         {
-            var row = new VisualElement();
-            row.style.flexDirection = FlexDirection.Row;
-            row.style.flexWrap = Wrap.Wrap;
-            row.style.marginTop = 8;
+            var card = LevelPlayUIStyle.CreateCard(
+                "Unity Build Settings",
+                "Quick toggle for Development Build so SDK logcat/console output remains unstripped on device.");
 
-            row.Add(Action("Open Test Suite docs",
-                () => Application.OpenURL("https://docs.unity.com/en-us/grow/levelplay/sdk/unity/test-suite")));
-            row.Add(Action("Build & Run", BuildAndRun));
-            row.Add(Action("Copy device checklist", () =>
+            devBuildToggle = new Toggle("Development Build")
             {
-                EditorGUIUtility.systemCopyBuffer =
-                    "LevelPlay device validation\n" +
-                    "1. enableTestSuite is ON in the helper prefab\n" +
-                    "2. Development Build is ON\n" +
-                    "3. build to a physical device and run\n" +
-                    "4. the Test Suite opens automatically - run every format\n" +
-                    "5. back in the editor: enableTestSuite OFF, Development Build OFF";
-                Log("Device checklist copied to the clipboard.");
-            }));
+                value = EditorUserBuildSettings.development
+            };
 
-            return row;
-        }
-
-        void BuildAndRun()
-        {
-            Log("Build & Run requested.");
-            EditorApplication.ExecuteMenuItem("File/Build And Run");
-        }
-
-        void UpdateTestSuiteStatus(bool enabled)
-        {
-            if (testSuiteStatus == null) return;
-
-            testSuiteStatus.text = enabled
-                ? "\u25CF ENABLED - the Test Suite will open on the next device build. Turn it OFF before releasing."
-                : "\u25CB Disabled - turn it on to validate real ads on a device.";
-            testSuiteStatus.style.color = enabled ? ColWarn : ColDim;
-        }
-
-        void Log(string message) => Debug.Log("[LevelPlayHelper] " + message);
-
-        // ------------------------------------------------------------ helpers
-
-        static bool GetBool(SerializedObject so, string property, bool fallback = false)
-        {
-            var prop = so.FindProperty(property);
-            return prop != null ? prop.boolValue : fallback;
-        }
-
-        static void SetHelperBool(LevelPlayHelper helper, string property, bool value)
-        {
-            Undo.RegisterCompleteObjectUndo(helper, "Edit LevelPlay testing flags");
-
-            var so = new SerializedObject(helper);
-            var prop = so.FindProperty(property);
-            if (prop == null) return;
-
-            prop.boolValue = value;
-            so.ApplyModifiedProperties();
-            EditorUtility.SetDirty(helper);
-            AssetDatabase.SaveAssets();
-
-            Debug.Log($"[LevelPlayHelper] {property} = {value}");
-        }
-
-        void AddSection(string title, string subtitle)
-        {
-            var box = new VisualElement();
-            box.style.marginTop = 14;
-            box.style.marginBottom = 6;
-            box.style.flexShrink = 0;
-
-            var t = new Label(title);
-            t.style.unityFontStyleAndWeight = FontStyle.Bold;
-            t.style.fontSize = 12.5f;
-            t.style.color = ColText;
-            t.style.marginBottom = 2;
-            box.Add(t);
-
-            var s = new Label(subtitle);
-            s.style.fontSize = 10.5f;
-            s.style.color = ColDim;
-            s.style.whiteSpace = WhiteSpace.Normal;
-            box.Add(s);
-
-            body.Add(box);
-        }
-
-        VisualElement Steps(string title, params string[] lines)
-        {
-            var box = new VisualElement();
-            box.style.marginBottom = 6;
-
-            var head = new Label(title);
-            head.style.fontSize = 10.5f;
-            head.style.color = ColText;
-            head.style.marginBottom = 2;
-            box.Add(head);
-
-            foreach (var line in lines)
+            devBuildToggle.RegisterValueChangedCallback(evt =>
             {
-                var label = new Label(line);
-                label.style.fontSize = 10;
-                label.style.color = ColDim;
-                label.style.whiteSpace = WhiteSpace.Normal;
-                box.Add(label);
+                if (isReloading) return;
+                EditorUserBuildSettings.development = evt.newValue;
+            });
+
+            card.Add(devBuildToggle);
+            return card;
+        }
+
+        VisualElement BuildFooterActions()
+        {
+            var actions = new VisualElement();
+            actions.AddToClassList("lp-actions-row");
+
+            var docsBtn = new Button(() => Application.OpenURL(TestSuiteDocsUrl)) { text = "Test Suite Documentation" };
+            docsBtn.AddToClassList("lp-action-btn");
+            actions.Add(docsBtn);
+
+            var buildBtn = new Button(() => EditorApplication.ExecuteMenuItem("File/Build And Run")) { text = "Build & Run" };
+            buildBtn.AddToClassList("lp-action-btn");
+            actions.Add(buildBtn);
+
+            return actions;
+        }
+
+        void SetHelperProperty(string propertyName, bool value)
+        {
+            if (helper == null || serializedObject == null) return;
+
+            Undo.RegisterCompleteObjectUndo(helper, "Edit LevelPlay testing setting");
+            serializedObject.Update();
+
+            var prop = serializedObject.FindProperty(propertyName);
+            if (prop != null)
+            {
+                prop.boolValue = value;
+                serializedObject.ApplyModifiedProperties();
+                EditorUtility.SetDirty(helper);
+                AssetDatabase.SaveAssets();
             }
-
-            return box;
-        }
-
-        static Button Action(string text, System.Action clicked)
-        {
-            var button = new Button(clicked) { text = text };
-            button.style.height = 24;
-            button.style.flexGrow = 0;
-            button.style.alignSelf = Align.FlexStart;
-            button.style.marginRight = 6;
-            button.style.marginBottom = 4;
-            button.style.paddingLeft = 12;
-            button.style.paddingRight = 12;
-            return button;
-        }
-
-        static VisualElement Info(string title, string bodyText, Color accent)
-        {
-            var box = new VisualElement();
-            box.style.backgroundColor = new Color(accent.r, accent.g, accent.b, 0.12f);
-            box.style.borderLeftWidth = 3;
-            box.style.borderLeftColor = accent;
-            box.style.paddingTop = 6;
-            box.style.paddingBottom = 6;
-            box.style.paddingLeft = 8;
-            box.style.paddingRight = 8;
-            box.style.marginBottom = 8;
-
-            var t = new Label(title);
-            t.style.unityFontStyleAndWeight = FontStyle.Bold;
-            t.style.fontSize = 11.5f;
-            t.style.color = ColText;
-            box.Add(t);
-
-            var b = new Label(bodyText);
-            b.style.fontSize = 10.5f;
-            b.style.color = ColDim;
-            b.style.whiteSpace = WhiteSpace.Normal;
-            b.style.marginTop = 2;
-            box.Add(b);
-
-            return box;
         }
     }
 }

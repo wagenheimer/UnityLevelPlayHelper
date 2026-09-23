@@ -5,6 +5,20 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.11.0] - 2026-09-23
+
+### Added
+- Complete UI Toolkit redesign with native USS design system (`LevelPlayCommon.uss`)
+- Native `SerializedObject` two-way data-binding with Undo/Redo (Ctrl+Z) and prefab override tracking
+- Structured 4-hub information architecture: Credentials, Rules & Privacy, Testing, Diagnostics
+- Unified `LevelPlayDashboardView` shared seamlessly between Custom Inspector and standalone Manager window
+- Real-time credential format validation badges (Android & iOS)
+- Integrated ad pacing (AdsConfiguration) and privacy/consent (GDPR, CCPA, COPPA) panel
+- Embedded Editor mock ads mode switch in Testing panel
+- Comprehensive Unity Ads & ironSource demand diagnostics with real-time instance verification
+- In-UI step-by-step interactive setup guide with direct links for Unity Cloud and LevelPlay Next dashboards
+- Updated all links and actions to the modern LevelPlay Next dashboard (`/partners/next/`)
+
 ## [2.10.0] - 2026-09-22
 
 ### Added

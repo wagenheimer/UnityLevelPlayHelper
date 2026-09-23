@@ -1,59 +1,74 @@
 using System;
 using System.Collections.Generic;
-
 using UnityEditor;
-
+using UnityEditor.UIElements;
 using UnityEngine;
 using UnityEngine.UIElements;
 
 namespace Wagenheimer.LevelPlayHelper.Editor
 {
     /// <summary>
-    /// Edit the LevelPlayHelper credentials (App Keys + Ad Unit IDs per platform) with live
-    /// validation, writing straight back to the helper prefab. This is the "configure" half of
-    /// the setup window: the checklist only reports, this panel fixes.
+    /// UI Toolkit credentials configurator for LevelPlayHelper.
+    /// Uses native SerializedObject data-binding for immediate persistence, Undo/Redo support,
+    /// and real-time credential validation with visual status badges.
     /// </summary>
     internal sealed class LevelPlayCredentialsPanel
     {
         const string DashboardUrl = "https://platform.ironsrc.com/";
         const string AdUnitsUrl = "https://platform.ironsrc.com/partners/adUnits";
 
-        static readonly Color ColOk = new Color(0.298f, 0.686f, 0.314f);
-        static readonly Color ColWarn = new Color(1.000f, 0.690f, 0.125f);
-        static readonly Color ColFail = new Color(0.898f, 0.282f, 0.302f);
-        static readonly Color ColDim = new Color(0.650f, 0.650f, 0.650f);
-        static readonly Color ColAccent = new Color(0.290f, 0.565f, 0.851f);
-
-        sealed class Field
-        {
-            public TextField Input;
-            public string Property;
-            public string Label;
-            public bool IsAppKey;
-        }
-
         public VisualElement Root { get; }
 
-        VisualElement body;
-        Label validationLabel;
+        readonly ScrollView scroll;
+        readonly VisualElement body;
+        SerializedObject serializedObject;
         LevelPlayHelper helper;
-        SerializedObject serialized;
-        readonly List<Field> fields = new List<Field>();
 
-        public LevelPlayCredentialsPanel()
+        enum PlatformTab { Android, IOS }
+        PlatformTab currentPlatform = PlatformTab.Android;
+
+        VisualElement androidTabBtn;
+        VisualElement iosTabBtn;
+        VisualElement androidContainer;
+        VisualElement iosContainer;
+
+        Label androidStatusBadge;
+        Label iosStatusBadge;
+
+        readonly List<Action> validatorCallbacks = new List<Action>();
+
+        public LevelPlayCredentialsPanel(SerializedObject serialized = null)
         {
             Root = new VisualElement();
-            Root.style.flexGrow = 1;
+            Root.AddToClassList("lp-root");
+            LevelPlayUIStyle.Apply(Root);
 
-            var scroll = new ScrollView(ScrollViewMode.Vertical);
+            scroll = new ScrollView(ScrollViewMode.Vertical);
             scroll.style.flexGrow = 1;
             Root.Add(scroll);
 
             body = scroll.contentContainer;
-            body.style.paddingTop = 10;
-            body.style.paddingBottom = 10;
-            body.style.paddingLeft = 2;
-            body.style.paddingRight = 14;
+
+            if (EditorUserBuildSettings.activeBuildTarget == BuildTarget.iOS)
+            {
+                currentPlatform = PlatformTab.IOS;
+            }
+
+            SetTarget(serialized);
+        }
+
+        public void SetTarget(SerializedObject serialized)
+        {
+            if (serialized != null && serialized.targetObject is LevelPlayHelper h)
+            {
+                serializedObject = serialized;
+                helper = h;
+            }
+            else
+            {
+                helper = LevelPlayHelperLocator.FindPreferred();
+                serializedObject = helper != null ? new SerializedObject(helper) : null;
+            }
 
             Reload();
         }
@@ -61,327 +76,277 @@ namespace Wagenheimer.LevelPlayHelper.Editor
         public void Reload()
         {
             body.Clear();
-            fields.Clear();
+            validatorCallbacks.Clear();
 
-            helper = LevelPlayHelperLocator.FindPreferred();
-
-            if (helper == null)
+            if (helper == null || serializedObject == null)
             {
-                body.Add(Info("No LevelPlayHelper found",
-                    "No prefab or open scene contains the LevelPlayHelper component. Create the prefab " +
-                    "(Assets/Resources/Monetization/LevelPlayHelper.prefab) and it will show up here for configuration.", ColFail));
+                body.Add(LevelPlayUIStyle.CreateCallout(
+                    "No LevelPlayHelper component found. Create or select the prefab " +
+                    "(Assets/Resources/Monetization/LevelPlayHelper.prefab) to configure credentials.",
+                    "fail"));
                 return;
             }
 
-            serialized = new SerializedObject(helper);
+            serializedObject.Update();
 
-            body.Add(Info("LevelPlayHelper credentials",
-                "These values are written to the prefab " + LevelPlayHelperLocator.LocationOf(helper) +
-                " - the object the runtime instantiates. These are NOT the Ads Mediation > Developer Settings.", ColAccent));
+            var location = LevelPlayHelperLocator.LocationOf(helper);
+            body.Add(LevelPlayUIStyle.CreateCallout(
+                $"Configuring credentials on: {location}. Changes apply live with full Undo (Ctrl+Z) support.",
+                "info"));
 
-            body.Add(PlatformCard("Android", "android"));
-            body.Add(PlatformCard("iOS", "ios"));
-            body.Add(BuildActions());
+            // Platform Switcher
+            body.Add(BuildPlatformSwitcher());
 
-            validationLabel = new Label();
-            validationLabel.style.fontSize = 11;
-            validationLabel.style.whiteSpace = WhiteSpace.Normal;
-            validationLabel.style.marginTop = 6;
-            validationLabel.style.marginBottom = 4;
-            body.Add(validationLabel);
+            // Platform Containers
+            androidContainer = BuildPlatformCard("Android", "android");
+            iosContainer = BuildPlatformCard("iOS", "ios");
 
-            body.Add(BuildLegend());
+            body.Add(androidContainer);
+            body.Add(iosContainer);
 
-            Validate();
+            // Banner Preset Card
+            body.Add(BuildBannerSettingsCard());
+
+            // Footer Quick Links
+            body.Add(BuildFooterActions());
+
+            UpdatePlatformVisibility();
+            ValidateAll();
         }
 
-        VisualElement PlatformCard(string platform, string prefix)
-        {
-            var card = new VisualElement();
-            card.style.backgroundColor = new Color(1f, 1f, 1f, 0.055f);
-            card.style.paddingTop = 8;
-            card.style.paddingBottom = 8;
-            card.style.paddingLeft = 10;
-            card.style.paddingRight = 10;
-            card.style.marginBottom = 8;
-            card.style.borderLeftWidth = 3;
-            card.style.borderLeftColor = ColAccent;
-
-            var title = new Label(platform);
-            title.style.unityFontStyleAndWeight = FontStyle.Bold;
-            title.style.fontSize = 12.5f;
-            title.style.color = new Color(0.85f, 0.85f, 0.85f);
-            card.Add(title);
-
-            var hint = new Label(prefix == "ios"
-                ? "Dashboard > Apps: copy the iOS app's App Key. Ad Units: one per format."
-                : "Dashboard > Apps: copy the Android app's App Key. Ad Units: one per format.");
-            hint.style.fontSize = 10;
-            hint.style.color = ColDim;
-            hint.style.marginBottom = 6;
-            card.Add(hint);
-
-            AddField(card, platform, prefix + "AppKey", "App Key", true);
-            AddField(card, platform, prefix + "InterstitialAdUnitId", "Interstitial Ad Unit ID", false);
-            AddField(card, platform, prefix + "RewardedAdUnitId", "Rewarded Ad Unit ID", false);
-            AddField(card, platform, prefix + "BannerAdUnitId", "Banner Ad Unit ID (optional)", false);
-
-            return card;
-        }
-
-        void AddField(VisualElement parent, string platform, string property, string label, bool isAppKey)
-        {
-            var prop = serialized.FindProperty(property);
-            if (prop == null) return;
-
-            var row = new VisualElement();
-            row.style.flexDirection = FlexDirection.Row;
-            row.style.alignItems = Align.Center;
-            row.style.marginBottom = 2;
-
-            var dot = new Label("\u25CF");
-            dot.style.width = 14;
-            dot.style.color = ColDim;
-            dot.name = "dot-" + property;
-            row.Add(dot);
-
-            var fieldLabel = new Label(label);
-            fieldLabel.style.width = 210;
-            fieldLabel.style.fontSize = 11;
-            fieldLabel.style.color = new Color(0.80f, 0.80f, 0.80f);
-            row.Add(fieldLabel);
-
-            var input = new TextField();
-            input.value = prop.stringValue;
-            input.style.flexGrow = 1;
-            input.style.marginLeft = 4;
-            input.style.marginRight = 4;
-            row.Add(input);
-
-            var note = new Label("");
-            note.style.width = 230;
-            note.style.fontSize = 10;
-            note.style.color = ColDim;
-            note.name = "note-" + property;
-            row.Add(note);
-
-            // Live validation while typing (does not write to the asset).
-            input.RegisterValueChangedCallback(_ =>
-            {
-                ValidateField(property, input.value, isAppKey, note, dot);
-                MarkDirty(true);
-            });
-
-            parent.Add(row);
-
-            fields.Add(new Field { Input = input, Property = property, Label = platform + " " + label, IsAppKey = isAppKey });
-        }
-
-        VisualElement BuildActions()
+        VisualElement BuildPlatformSwitcher()
         {
             var bar = new VisualElement();
-            bar.style.flexDirection = FlexDirection.Row;
-            bar.style.marginTop = 4;
+            bar.AddToClassList("lp-platform-tabs");
 
-            bar.style.flexWrap = Wrap.Wrap;
+            androidTabBtn = new Button(() => SwitchPlatform(PlatformTab.Android)) { text = "Android Configuration" };
+            androidTabBtn.AddToClassList("lp-platform-tab");
 
-            var check = SmallButton("Check credentials", CheckAll);
-            check.style.backgroundColor = new Color(ColAccent.r, ColAccent.g, ColAccent.b, 0.35f);
-            bar.Add(check);
+            iosTabBtn = new Button(() => SwitchPlatform(PlatformTab.IOS)) { text = "iOS Configuration" };
+            iosTabBtn.AddToClassList("lp-platform-tab");
 
-            var apply = SmallButton("Apply to prefab", Apply);
-            apply.style.backgroundColor = new Color(ColOk.r, ColOk.g, ColOk.b, 0.35f);
-            bar.Add(apply);
-
-            bar.Add(SmallButton("Revert", Reload));
-            bar.Add(SmallButton("Open Dashboard", () => Application.OpenURL(DashboardUrl)));
-            bar.Add(SmallButton("Open Ad Units", () => Application.OpenURL(AdUnitsUrl)));
+            bar.Add(androidTabBtn);
+            bar.Add(iosTabBtn);
 
             return bar;
         }
 
-        // The default Button style grows to fill its container, which made every button span the
-        // whole inspector; zero the grow and let it size to its label.
-        static Button SmallButton(string text, Action clicked)
+        void SwitchPlatform(PlatformTab tab)
         {
-            var button = new Button(clicked) { text = text };
-            button.style.height = 24;
-            button.style.flexGrow = 0;
-            button.style.alignSelf = Align.FlexStart;
-            button.style.marginRight = 6;
-            button.style.marginBottom = 4;
-            button.style.paddingLeft = 12;
-            button.style.paddingRight = 12;
-            return button;
+            currentPlatform = tab;
+            UpdatePlatformVisibility();
         }
 
-        VisualElement BuildLegend()
+        void UpdatePlatformVisibility()
         {
-            var legend = new Label("\u25CF valid   \u25CB empty/placeholder   ! invalid format (the SDK rejects it as 'invalid ad unit id')");
-            legend.style.fontSize = 9.5f;
-            legend.style.color = ColDim;
-            legend.style.marginTop = 6;
-            return legend;
-        }
+            if (androidTabBtn == null || iosTabBtn == null) return;
 
-        void Apply()
-        {
-            if (helper == null || serialized == null) return;
-
-            Undo.RegisterCompleteObjectUndo(helper, "Edit LevelPlay credentials");
-
-            foreach (var field in fields)
+            bool isAndroid = currentPlatform == PlatformTab.Android;
+            if (isAndroid)
             {
-                var prop = serialized.FindProperty(field.Property);
-                if (prop != null) prop.stringValue = field.Input.value;
+                androidTabBtn.AddToClassList("lp-platform-tab--active");
+                iosTabBtn.RemoveFromClassList("lp-platform-tab--active");
+                androidContainer.style.display = DisplayStyle.Flex;
+                iosContainer.style.display = DisplayStyle.None;
+            }
+            else
+            {
+                iosTabBtn.AddToClassList("lp-platform-tab--active");
+                androidTabBtn.RemoveFromClassList("lp-platform-tab--active");
+                androidContainer.style.display = DisplayStyle.None;
+                iosContainer.style.display = DisplayStyle.Flex;
+            }
+        }
+
+        VisualElement BuildPlatformCard(string platformName, string prefix)
+        {
+            var badge = LevelPlayUIStyle.CreateBadge("Checking...", "info");
+            if (prefix == "android") androidStatusBadge = badge;
+            else iosStatusBadge = badge;
+
+            var card = LevelPlayUIStyle.CreateCard(
+                $"{platformName} Credentials",
+                $"App Key & Ad Unit IDs configured in the LevelPlay Dashboard for {platformName}.",
+                badge);
+
+            var appKeyProp = serializedObject.FindProperty(prefix + "AppKey");
+            var interstitialProp = serializedObject.FindProperty(prefix + "InterstitialAdUnitId");
+            var rewardedProp = serializedObject.FindProperty(prefix + "RewardedAdUnitId");
+            var bannerProp = serializedObject.FindProperty(prefix + "BannerAdUnitId");
+
+            card.Add(BuildBoundCredentialRow(appKeyProp, "App Key", true, false));
+            card.Add(BuildBoundCredentialRow(interstitialProp, "Interstitial Unit ID", false, false));
+            card.Add(BuildBoundCredentialRow(rewardedProp, "Rewarded Unit ID", false, false));
+            card.Add(BuildBoundCredentialRow(bannerProp, "Banner Unit ID (Optional)", false, true));
+
+            return card;
+        }
+
+        VisualElement BuildBoundCredentialRow(SerializedProperty prop, string labelText, bool isAppKey, bool isOptional)
+        {
+            var row = new VisualElement();
+            row.AddToClassList("lp-field-row");
+
+            var label = new Label(labelText);
+            label.AddToClassList("lp-field-label");
+            row.Add(label);
+
+            var input = new TextField();
+            input.AddToClassList("lp-field-input");
+            if (prop != null)
+            {
+                input.BindProperty(prop);
+            }
+            row.Add(input);
+
+            var statusIcon = new Label("\u25CF");
+            statusIcon.AddToClassList("lp-field-status");
+            row.Add(statusIcon);
+
+            var help = new Label();
+            help.AddToClassList("lp-field-help");
+
+            var wrapper = new VisualElement();
+            wrapper.Add(row);
+            wrapper.Add(help);
+
+            void ValidateThis()
+            {
+                var val = input.value;
+                if (!CredentialValidation.IsSet(val))
+                {
+                    if (isOptional)
+                    {
+                        statusIcon.text = "\u25CB";
+                        statusIcon.style.color = new Color(0.6f, 0.6f, 0.6f);
+                        help.text = "Format is disabled (optional). Real ads will not request banners.";
+                    }
+                    else
+                    {
+                        statusIcon.text = "!";
+                        statusIcon.style.color = new Color(0.9f, 0.3f, 0.3f);
+                        help.text = "Required field. Ad requests will fail without this credential.";
+                    }
+                    return;
+                }
+
+                if (CredentialValidation.IsPlaceholder(val))
+                {
+                    statusIcon.text = "!";
+                    statusIcon.style.color = new Color(1f, 0.6f, 0.1f);
+                    help.text = "Placeholder detected. Enter the real key from Dashboard.";
+                    return;
+                }
+
+                var problem = CredentialValidation.DescribeProblem(val, isAppKey);
+                if (problem != null)
+                {
+                    bool isHard = CredentialValidation.IsHardProblem(problem);
+                    statusIcon.text = "!";
+                    statusIcon.style.color = isHard ? new Color(0.9f, 0.3f, 0.3f) : new Color(1f, 0.7f, 0.2f);
+                    help.text = problem;
+                }
+                else
+                {
+                    statusIcon.text = "\u2713";
+                    statusIcon.style.color = new Color(0.3f, 0.8f, 0.4f);
+                    help.text = "";
+                }
             }
 
-            serialized.ApplyModifiedProperties();
-            EditorUtility.SetDirty(helper);
-            AssetDatabase.SaveAssets();
-
-            MarkDirty(false);
-            Validate();
-        }
-
-        bool dirty;
-
-        void MarkDirty(bool value)
-        {
-            dirty = value;
-            Root.Query<Button>().ForEach(b =>
+            input.RegisterValueChangedCallback(_ =>
             {
-                if (b.text == "Apply to prefab" || b.text == "Apply to prefab *")
-                    b.text = value ? "Apply to prefab *" : "Apply to prefab";
+                ValidateThis();
+                UpdatePlatformBadges();
             });
+
+            validatorCallbacks.Add(ValidateThis);
+            return wrapper;
         }
 
-        void Validate()
+        VisualElement BuildBannerSettingsCard()
         {
-            foreach (var field in fields)
+            var card = LevelPlayUIStyle.CreateCard(
+                "Banner Display Settings",
+                "Control anchor position for banner ads on screen.");
+
+            var bannerPosProp = serializedObject.FindProperty("bannerPosition");
+            if (bannerPosProp != null)
             {
-                var note = Root.Q<Label>("note-" + field.Property);
-                var dot = Root.Q<Label>("dot-" + field.Property);
-                ValidateField(field.Property, field.Input.value, field.IsAppKey, note, dot);
+                var field = new PropertyField(bannerPosProp, "Banner Position");
+                field.Bind(serializedObject);
+                card.Add(field);
             }
+
+            return card;
         }
 
-        // Explicit "does everything validate?" pass over every credential, with a summary.
-        void CheckAll()
+        VisualElement BuildFooterActions()
         {
-            Validate();
+            var actions = new VisualElement();
+            actions.AddToClassList("lp-actions-row");
 
-            var problems = new List<string>();
-            var warnings = new List<string>();
+            var dashBtn = new Button(() => Application.OpenURL(DashboardUrl)) { text = "LevelPlay Dashboard" };
+            dashBtn.AddToClassList("lp-action-btn");
+            actions.Add(dashBtn);
 
-            foreach (var field in fields)
+            var unitsBtn = new Button(() => Application.OpenURL(AdUnitsUrl)) { text = "Ad Units Dashboard" };
+            unitsBtn.AddToClassList("lp-action-btn");
+            actions.Add(unitsBtn);
+
+            var recheckBtn = new Button(ValidateAll) { text = "Re-check Credentials" };
+            recheckBtn.AddToClassList("lp-action-btn");
+            actions.Add(recheckBtn);
+
+            return actions;
+        }
+
+        void ValidateAll()
+        {
+            foreach (var callback in validatorCallbacks)
             {
-                var value = field.Input.value;
-                var optional = field.Property.EndsWith("BannerAdUnitId");
-
-                if (!CredentialValidation.IsSet(value))
-                {
-                    if (optional) warnings.Add(field.Label + ": empty (banner disabled)");
-                    else problems.Add(field.Label + ": empty");
-                    continue;
-                }
-
-                if (CredentialValidation.IsPlaceholder(value))
-                {
-                    problems.Add(field.Label + ": placeholder value");
-                    continue;
-                }
-
-                var reason = CredentialValidation.DescribeProblem(value, field.IsAppKey);
-                if (CredentialValidation.IsHardProblem(reason)) problems.Add(field.Label + ": " + reason);
-                else if (reason != null) warnings.Add(field.Label + ": " + reason);
+                callback?.Invoke();
             }
+            UpdatePlatformBadges();
+        }
 
-            if (problems.Count == 0 && warnings.Count == 0)
+        void UpdatePlatformBadges()
+        {
+            if (serializedObject == null) return;
+            serializedObject.Update();
+
+            EvaluateBadge("android", androidStatusBadge);
+            EvaluateBadge("ios", iosStatusBadge);
+        }
+
+        void EvaluateBadge(string prefix, Label badge)
+        {
+            if (badge == null) return;
+
+            var appKey = serializedObject.FindProperty(prefix + "AppKey")?.stringValue;
+            var interstitial = serializedObject.FindProperty(prefix + "InterstitialAdUnitId")?.stringValue;
+            var rewarded = serializedObject.FindProperty(prefix + "RewardedAdUnitId")?.stringValue;
+
+            if (!CredentialValidation.IsSet(appKey) || CredentialValidation.IsPlaceholder(appKey))
             {
-                SetValidation("OK - every credential is valid.", ColOk);
+                LevelPlayUIStyle.SetBadge(badge, "Missing App Key", "fail");
                 return;
             }
 
-            if (problems.Count == 0)
+            bool hasAnyFormat = CredentialValidation.IsSet(interstitial) || CredentialValidation.IsSet(rewarded);
+            if (!hasAnyFormat)
             {
-                SetValidation("Valid, with warnings:\n- " + string.Join("\n- ", warnings), ColWarn);
+                LevelPlayUIStyle.SetBadge(badge, "No Ad Units", "warn");
                 return;
             }
 
-            var text = "Problems found:\n- " + string.Join("\n- ", problems);
-            if (warnings.Count > 0) text += "\nWarnings:\n- " + string.Join("\n- ", warnings);
-            SetValidation(text, ColFail);
-        }
-
-        void SetValidation(string text, Color color)
-        {
-            if (validationLabel == null) return;
-            validationLabel.text = text;
-            validationLabel.style.color = color;
-        }
-
-        static void ValidateField(string property, string value, bool isAppKey, Label note, Label dot)
-        {
-            if (dot != null) dot.style.color = ColDim;
-            if (note != null) note.text = "";
-
-            if (!CredentialValidation.IsSet(value))
+            if (!CredentialValidation.IsSet(interstitial) || !CredentialValidation.IsSet(rewarded))
             {
-                if (note != null)
-                {
-                    note.text = property.EndsWith("BannerAdUnitId") ? "empty (disables banner)" : "empty";
-                    note.style.color = property.EndsWith("BannerAdUnitId") ? ColWarn : ColFail;
-                }
-                if (dot != null && !property.EndsWith("BannerAdUnitId")) dot.style.color = ColFail;
+                LevelPlayUIStyle.SetBadge(badge, "Partially Configured", "warn");
                 return;
             }
 
-            if (CredentialValidation.IsPlaceholder(value))
-            {
-                if (dot != null) dot.style.color = ColFail;
-                if (note != null) { note.text = "placeholder"; note.style.color = ColFail; }
-                return;
-            }
-
-            var reason = CredentialValidation.DescribeProblem(value, isAppKey);
-            if (reason == null || !CredentialValidation.IsHardProblem(reason))
-            {
-                if (dot != null) dot.style.color = ColOk;
-                if (note != null && reason != null) { note.text = reason; note.style.color = ColWarn; }
-                return;
-            }
-
-            if (dot != null) dot.style.color = ColFail;
-            if (note != null) { note.text = reason; note.style.color = ColFail; }
-        }
-
-        static VisualElement Info(string title, string body, Color accent)
-        {
-            var box = new VisualElement();
-            box.style.backgroundColor = new Color(accent.r, accent.g, accent.b, 0.12f);
-            box.style.borderLeftWidth = 3;
-            box.style.borderLeftColor = accent;
-            box.style.paddingTop = 6;
-            box.style.paddingBottom = 6;
-            box.style.paddingLeft = 8;
-            box.style.paddingRight = 8;
-            box.style.marginBottom = 8;
-
-            var t = new Label(title);
-            t.style.unityFontStyleAndWeight = FontStyle.Bold;
-            t.style.fontSize = 11.5f;
-            t.style.color = new Color(0.85f, 0.85f, 0.85f);
-            box.Add(t);
-
-            var b = new Label(body);
-            b.style.fontSize = 10.5f;
-            b.style.color = ColDim;
-            b.style.whiteSpace = WhiteSpace.Normal;
-            b.style.marginTop = 2;
-            box.Add(b);
-
-            return box;
+            LevelPlayUIStyle.SetBadge(badge, "Ready", "ok");
         }
     }
 }

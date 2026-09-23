@@ -38,5 +38,12 @@ namespace Wagenheimer.LevelPlayHelper.Editor
             EditorPrefs.DeleteKey(SecretKeyPref);
             EditorPrefs.DeleteKey(RefreshTokenPref);
         }
+
+        public static string Mask(string value)
+        {
+            if (string.IsNullOrEmpty(value)) return "(none)";
+            if (value.Length <= 8) return new string('*', value.Length);
+            return value.Substring(0, 4) + "..." + value.Substring(value.Length - 4);
+        }
     }
 }
