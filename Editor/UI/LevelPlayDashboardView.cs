@@ -84,7 +84,8 @@ namespace Wagenheimer.LevelPlayHelper.Editor
 
         Button CreateTabBtn(string title, Tab target)
         {
-            var btn = new Button(() => ShowTab(target)) { text = title };
+            var btn = new Button(() => ShowTab(target));
+            LevelPlayUIStyle.ApplyIconText(btn, title);
             btn.AddToClassList("lp-tab-button");
             return btn;
         }

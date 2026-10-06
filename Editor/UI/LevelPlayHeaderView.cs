@@ -73,7 +73,8 @@ namespace Wagenheimer.LevelPlayHelper.Editor
 
         static Button CreateToolbarBtn(string text, Action onClick)
         {
-            var btn = new Button(onClick) { text = text };
+            var btn = new Button(onClick);
+            LevelPlayUIStyle.ApplyIconText(btn, text);
             btn.AddToClassList("lp-toolbar-btn");
             return btn;
         }

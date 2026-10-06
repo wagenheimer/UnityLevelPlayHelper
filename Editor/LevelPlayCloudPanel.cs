@@ -712,32 +712,31 @@ namespace Wagenheimer.LevelPlayHelper.Editor
             var actions = new VisualElement();
             actions.AddToClassList("lp-actions-row");
 
-            var enableDefaultBtn = new Button(EnableDefaultNetworks) { text = "⚡ Enable Default Networks (ironSource + UnityAds via API)" };
+            var enableDefaultBtn = new Button(EnableDefaultNetworks);
+            LevelPlayUIStyle.ApplyIconText(enableDefaultBtn, "⚡ Enable Default Networks (ironSource + UnityAds via API)");
             enableDefaultBtn.AddToClassList("lp-action-btn");
             enableDefaultBtn.AddToClassList("lp-action-btn--primary");
             actions.Add(enableDefaultBtn);
 
-            var openNetManagerBtn = new Button(OpenUnityNetworkManager) { text = "📦 Open Network Manager (Unity)" };
+            var openNetManagerBtn = new Button(OpenUnityNetworkManager);
+            LevelPlayUIStyle.ApplyIconText(openNetManagerBtn, "📦 Open Network Manager (Unity)");
             openNetManagerBtn.AddToClassList("lp-action-btn");
             actions.Add(openNetManagerBtn);
 
-            var openDashboardNetworksBtn = new Button(() => Application.OpenURL(SdkNetworksUrl))
-            {
-                text = "🌐 Open SDK Networks (Dashboard)",
-                tooltip = "Direct link: " + SdkNetworksUrl
-            };
+            var openDashboardNetworksBtn = new Button(() => Application.OpenURL(SdkNetworksUrl));
+            LevelPlayUIStyle.ApplyIconText(openDashboardNetworksBtn, "🌐 Open SDK Networks (Dashboard)");
+            openDashboardNetworksBtn.tooltip = "Direct link: " + SdkNetworksUrl;
             openDashboardNetworksBtn.AddToClassList("lp-action-btn");
             actions.Add(openDashboardNetworksBtn);
 
-            var openDashboardUnitsBtn = new Button(() => Application.OpenURL(DashboardAdUnitsUrl))
-            {
-                text = "🌐 Open Instances (Dashboard)",
-                tooltip = "Direct link: " + DashboardAdUnitsUrl
-            };
+            var openDashboardUnitsBtn = new Button(() => Application.OpenURL(DashboardAdUnitsUrl));
+            LevelPlayUIStyle.ApplyIconText(openDashboardUnitsBtn, "🌐 Open Instances (Dashboard)");
+            openDashboardUnitsBtn.tooltip = "Direct link: " + DashboardAdUnitsUrl;
             openDashboardUnitsBtn.AddToClassList("lp-action-btn");
             actions.Add(openDashboardUnitsBtn);
 
-            var inspectInstancesBtn = new Button(() => _ = FetchInstancesAsync()) { text = "🔍 Inspect Detailed Instances" };
+            var inspectInstancesBtn = new Button(() => _ = FetchInstancesAsync());
+            LevelPlayUIStyle.ApplyIconText(inspectInstancesBtn, "🔍 Inspect Detailed Instances");
             inspectInstancesBtn.AddToClassList("lp-action-btn");
             actions.Add(inspectInstancesBtn);
 

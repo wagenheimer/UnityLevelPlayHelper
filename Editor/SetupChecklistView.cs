@@ -196,7 +196,8 @@ namespace Wagenheimer.LevelPlayHelper.Editor
 
         Button ToolbarButton(string text, Action clicked, Color? accent = null)
         {
-            var button = new Button(clicked) { text = text };
+            var button = new Button(clicked);
+            LevelPlayUIStyle.ApplyIconText(button, text);
             button.style.height = 22;
             button.style.marginLeft = 4;
             button.style.paddingLeft = 10;
