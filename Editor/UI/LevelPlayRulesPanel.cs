@@ -68,6 +68,7 @@ namespace Wagenheimer.LevelPlayHelper.Editor
 
             body.Add(BuildPacingCard());
             body.Add(BuildPrivacyCard());
+            body.Add(BuildTrackingCard());
             body.Add(BuildFooterActions());
         }
 
@@ -153,6 +154,48 @@ namespace Wagenheimer.LevelPlayHelper.Editor
                     card.Add(f);
                 }
             }
+
+            return card;
+        }
+
+        VisualElement BuildTrackingCard()
+        {
+            var badge = LevelPlayUIStyle.CreateBadge("iOS", "warn");
+            var card = LevelPlayUIStyle.CreateCard(
+                "App Tracking Transparency (iOS)",
+                "The helper resolves ATT before LevelPlay.Init(). Without the advertising identifier, personalized fill is lower.",
+                badge);
+
+            var trackingProp = serializedObject.FindProperty("trackingConfig");
+            if (trackingProp != null)
+            {
+                var request = trackingProp.FindPropertyRelative("requestAuthorization");
+                if (request != null)
+                {
+                    var f = new PropertyField(request, "Request ATT Authorization");
+                    f.Bind(serializedObject);
+                    f.tooltip = "Requests the native App Tracking Transparency alert on iOS 14.5+ before the SDK is initialized.";
+                    card.Add(f);
+                }
+
+                var usage = trackingProp.FindPropertyRelative("usageDescription");
+                if (usage != null)
+                {
+                    var label = new Label("NSUserTrackingUsageDescription");
+                    label.AddToClassList("lp-field-label");
+                    card.Add(label);
+
+                    var text = new TextField { multiline = true, bindingPath = usage.propertyPath };
+                    text.Bind(serializedObject);
+                    text.tooltip = "Purpose string shown under Apple's ATT alert. Be specific - Apple rejects missing or vague descriptions.";
+                    text.style.minHeight = 52;
+                    card.Add(text);
+                }
+            }
+
+            card.Add(LevelPlayUIStyle.CreateCallout(
+                "Optional pre-prompt: assign LevelPlayHelper.PreTrackingPrompt before init. Its single button must say Continue/Next and must not call ATT itself (App Store 5.1.1(iv)).",
+                "info"));
 
             return card;
         }

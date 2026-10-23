@@ -8,6 +8,10 @@ using Unity.Services.LevelPlay;
 
 using UnityEngine;
 
+#if UNITY_IOS
+using Unity.Advertisement.IosSupport;
+#endif
+
 namespace Wagenheimer.LevelPlayHelper
 {
     [Serializable]
@@ -79,6 +83,12 @@ namespace Wagenheimer.LevelPlayHelper
 
             mainThreadId = Thread.CurrentThread.ManagedThreadId;
 
+            // Prefabs serialized before 2.13.0 have no trackingConfig block.
+            if (trackingConfig == null)
+                trackingConfig = new TrackingConfiguration();
+
+            trackingState = ReadTrackingState();
+
             if (enableDebugOverlay && (Application.isEditor || Debug.isDebugBuild))
             {
                 EnsureDebugOverlay();
@@ -131,6 +141,16 @@ namespace Wagenheimer.LevelPlayHelper
         /// <summary>Raw impression-level revenue data (background thread).</summary>
         public static event Action<LevelPlayImpressionData> OnImpressionDataReady;
 
+        /// <summary>
+        /// Optional coroutine shown on iOS before the native ATT alert. Set it before the
+        /// helper initializes. The coroutine must only close its own UI; the helper calls the
+        /// ATT API when it completes. Use a single "Continue"/"Next" action (App Store 5.1.1(iv)).
+        /// </summary>
+        public static Func<IEnumerator> PreTrackingPrompt { get; set; }
+
+        /// <summary>Raised once the ATT status is resolved (immediately on non-iOS platforms).</summary>
+        public static event Action<TrackingAuthorizationState> OnTrackingAuthorizationCompleted;
+
         #endregion
 
         #region Configuration
@@ -155,6 +175,7 @@ namespace Wagenheimer.LevelPlayHelper
         [Header("Settings")]
         [SerializeField] private AdsConfiguration adsConfig = new AdsConfiguration();
         [SerializeField] private ConsentConfiguration consentConfig = new ConsentConfiguration();
+        [SerializeField] private TrackingConfiguration trackingConfig = new TrackingConfiguration();
 
         [Header("Testing")]
         [Tooltip("Launches the LevelPlay Test Suite on device builds after init. DISABLE BEFORE RELEASE.")]
@@ -166,6 +187,7 @@ namespace Wagenheimer.LevelPlayHelper
 
         public AdsConfiguration AdsConfig => adsConfig;
         public ConsentConfiguration ConsentConfig => consentConfig;
+        public TrackingConfiguration TrackingConfig => trackingConfig;
 
         #endregion
 
@@ -193,9 +215,14 @@ namespace Wagenheimer.LevelPlayHelper
         private int interstitialRetryAttempt;
         private int rewardedRetryAttempt;
 
+        private TrackingAuthorizationState trackingState = TrackingAuthorizationState.Unknown;
+
         private Action onRewardSuccessCallback;
 
         public bool IsSdkInitialized => isSdkInitialized;
+
+        /// <summary>Current ATT status. <see cref="TrackingAuthorizationState.NotSupported"/> outside iOS.</summary>
+        public TrackingAuthorizationState TrackingState => trackingState;
 
         // SDK init lifecycle. The overlay uses these to explain a stuck initialization
         // (the classic "nothing loads and the log stays empty").
@@ -436,7 +463,12 @@ namespace Wagenheimer.LevelPlayHelper
                 return "SDK initialization has not started yet (Initialize() was never reached).";
 
             if (initState == SdkInitState.Initializing)
+            {
+                if (IsIos && trackingState == TrackingAuthorizationState.NotDetermined)
+                    return "Waiting for the App Tracking Transparency answer before initializing the SDK...";
+
                 return $"Waiting for the SDK init callback ({(InitElapsedSeconds ?? 0f):F0}s elapsed)...";
+            }
 
             if (initState == SdkInitState.Failed)
                 return $"SDK init failed: {lastInitError}. The helper retries automatically.";
@@ -498,6 +530,7 @@ namespace Wagenheimer.LevelPlayHelper
             sb.AppendLine($"Last init error   : {lastInitError ?? "-"}");
             sb.AppendLine($"App key           : {Mask(EffectiveAppKey)} [{(UsesMockAppKey ? "MOCK" : EffectiveHasAppKey ? "set" : "MISSING")}]");
             sb.AppendLine($"Consent           : GDPR={(consentConfig.enableGDPRConsent ? "on" : "off")} CCPA={(consentConfig.ccpaOptOut ? "on" : "off")} COPPA={(consentConfig.coppaChildDirected ? "on" : "off")} stored={PlayerPrefs.GetInt(CONSENT_KEY, 0) == 1}");
+            sb.AppendLine($"ATT               : {trackingState} (request={(trackingConfig.requestAuthorization ? "on" : "off")}, usage description={(string.IsNullOrWhiteSpace(trackingConfig.usageDescription) ? "MISSING" : "set")})");
             sb.AppendLine($"Test suite        : {enableTestSuite}");
             sb.AppendLine();
             sb.AppendLine(interstitialDiagnostics.ToSummaryLine(IsInterstitialReady()));
@@ -612,9 +645,9 @@ namespace Wagenheimer.LevelPlayHelper
         }
 
         /// <summary>
-        /// Applies privacy settings and initializes the LevelPlay SDK.
-        /// Safe to call multiple times; a call while initializing and any call after a
-        /// successful init are ignored.
+        /// Resolves ATT on iOS (optional pre-prompt, then the native alert), applies privacy
+        /// settings and initializes the LevelPlay SDK. Safe to call multiple times; a call while
+        /// initializing and any call after a successful init are ignored.
         /// </summary>
         public void Initialize()
         {
@@ -639,6 +672,21 @@ namespace Wagenheimer.LevelPlayHelper
 #endif
             }
 
+            initState = SdkInitState.Initializing;
+            initStartedUtc = DateTime.UtcNow;
+            lastInitError = null;
+
+            StartCoroutine(InitializeRoutine(appKey));
+        }
+
+        /// <summary>
+        /// ATT must be resolved before LevelPlay.Init(): the SDK reads the advertising
+        /// identifier during initialization and cannot recover it later in the session.
+        /// </summary>
+        private IEnumerator InitializeRoutine(string appKey)
+        {
+            yield return EnsureTrackingAuthorization();
+
             ApplyPrivacySettings();
 
             // Remove before adding: the SDK events are static, so a retry after a failed init
@@ -651,14 +699,136 @@ namespace Wagenheimer.LevelPlayHelper
             if (enableTestSuite)
                 LevelPlay.SetMetaData("is_test_suite", "enable");
 
-            initState = SdkInitState.Initializing;
-            initStartedUtc = DateTime.UtcNow;
-            lastInitError = null;
-
             LogAd(AdLogLevel.Info, $"Initializing LevelPlay SDK... (app key {Mask(appKey)})");
             LevelPlay.Init(appKey);
 
             StartCoroutine(InitWatchdog());
+        }
+
+        private IEnumerator EnsureTrackingAuthorization()
+        {
+#if UNITY_IOS && !UNITY_EDITOR
+            trackingState = ReadTrackingState();
+
+            if (!trackingConfig.requestAuthorization)
+            {
+                LogAd(AdLogLevel.Info, "ATT request disabled in the helper - the SDK will run without the advertising identifier.");
+                NotifyTrackingCompleted();
+                yield break;
+            }
+
+            if (string.IsNullOrWhiteSpace(trackingConfig.usageDescription))
+            {
+                LogAd(AdLogLevel.Error, "ATT usage description is empty - skipping the tracking request. Set it in the LevelPlayHelper inspector; the build processor writes it to Info.plist.");
+                NotifyTrackingCompleted();
+                yield break;
+            }
+
+            if (!IsTrackingApiAvailable())
+            {
+                trackingState = TrackingAuthorizationState.NotSupported;
+                LogAd(AdLogLevel.Info, "App Tracking Transparency requires iOS 14.5+ - skipping the tracking request.");
+                NotifyTrackingCompleted();
+                yield break;
+            }
+
+            if (trackingState == TrackingAuthorizationState.NotDetermined)
+            {
+                if (PreTrackingPrompt != null)
+                {
+                    LogAd(AdLogLevel.Info, "Showing the pre-tracking prompt...");
+                    yield return StartCoroutine(PreTrackingPrompt());
+                }
+
+                // Re-read: a project pre-prompt must not call ATT itself, but guard anyway.
+                if (ReadTrackingState() == TrackingAuthorizationState.NotDetermined)
+                {
+                    LogAd(AdLogLevel.Info, "Requesting App Tracking Transparency authorization...");
+                    ATTrackingStatusBinding.RequestAuthorizationTracking();
+
+                    // The native alert is answered by the player; wait for the status to change.
+                    // 60s is generous and keeps a missing Info.plist key from stalling init forever.
+                    float deadline = Time.realtimeSinceStartup + 60f;
+                    while (ReadTrackingState() == TrackingAuthorizationState.NotDetermined &&
+                           Time.realtimeSinceStartup < deadline)
+                    {
+                        yield return null;
+                    }
+                }
+
+                trackingState = ReadTrackingState();
+            }
+
+            switch (trackingState)
+            {
+                case TrackingAuthorizationState.Authorized:
+                    LogAd(AdLogLevel.Success, "ATT authorized - the advertising identifier is available.");
+                    break;
+                case TrackingAuthorizationState.NotDetermined:
+                    LogAd(AdLogLevel.Warning, "ATT status is still NotDetermined (missing NSUserTrackingUsageDescription, iOS below 14.5, or the alert was not answered). Continuing without the advertising identifier.");
+                    break;
+                default:
+                    LogAd(AdLogLevel.Warning, $"ATT {trackingState} - ads will run without the advertising identifier.");
+                    break;
+            }
+
+            NotifyTrackingCompleted();
+#else
+            trackingState = TrackingAuthorizationState.NotSupported;
+            yield break;
+#endif
+        }
+
+        private static TrackingAuthorizationState ReadTrackingState()
+        {
+#if UNITY_IOS && !UNITY_EDITOR
+            switch (ATTrackingStatusBinding.GetAuthorizationTrackingStatus())
+            {
+                case ATTrackingStatusBinding.AuthorizationTrackingStatus.NOT_DETERMINED:
+                    return TrackingAuthorizationState.NotDetermined;
+                case ATTrackingStatusBinding.AuthorizationTrackingStatus.RESTRICTED:
+                    return TrackingAuthorizationState.Restricted;
+                case ATTrackingStatusBinding.AuthorizationTrackingStatus.DENIED:
+                    return TrackingAuthorizationState.Denied;
+                case ATTrackingStatusBinding.AuthorizationTrackingStatus.AUTHORIZED:
+                    return TrackingAuthorizationState.Authorized;
+                default:
+                    return TrackingAuthorizationState.Unknown;
+            }
+#else
+            return TrackingAuthorizationState.NotSupported;
+#endif
+        }
+
+        /// <summary>
+        /// ATT exists from iOS 14.5. Older versions report NOT_DETERMINED forever, so asking
+        /// would only stall initialization until the polling timeout.
+        /// </summary>
+        private static bool IsTrackingApiAvailable()
+        {
+#if UNITY_IOS && !UNITY_EDITOR
+            // SystemInfo keeps this independent of the iOS module assembly. The string is
+            // typically "iOS 17.4"; scan its tokens for the first major.minor version.
+            foreach (var token in SystemInfo.operatingSystem.Split(' '))
+            {
+                var parts = token.Split('.');
+                if (parts.Length < 2)
+                    continue;
+
+                if (int.TryParse(parts[0], out var major) && int.TryParse(parts[1], out var minor))
+                    return major > 14 || (major == 14 && minor >= 5);
+            }
+
+            return false;
+#else
+            return false;
+#endif
+        }
+
+        private void NotifyTrackingCompleted()
+        {
+            try { OnTrackingAuthorizationCompleted?.Invoke(trackingState); }
+            catch (Exception e) { Debug.LogError($"[LevelPlayHelper] ATT completion subscriber threw: {e.Message}"); }
         }
 
         /// <summary>

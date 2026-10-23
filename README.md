@@ -2,7 +2,7 @@
 
 [![Unity](https://img.shields.io/badge/Unity-2022.3%2B-black?logo=unity)](https://unity.com)
 [![LevelPlay SDK](https://img.shields.io/badge/Ads%20Mediation-9.5.1-blue)](https://docs.unity.com/en-us/grow/levelplay/)
-[![Version](https://img.shields.io/badge/version-2.11.0-brightgreen.svg)](package.json)
+[![Version](https://img.shields.io/badge/version-2.13.0-brightgreen.svg)](package.json)
 [![License: MIT](https://img.shields.io/badge/License-MIT-green.svg)](LICENSE)
 [![Install](https://img.shields.io/badge/install-Git%20URL-orange)](#installation-unity-package-manager---git-url)
 
@@ -27,6 +27,7 @@ A drop-in, production-ready manager for **Unity LevelPlay (Ads Mediation)**. Add
 - [Events](#events)
 - [Fallback Behavior (Rewarded Ads)](#fallback-behavior-rewarded-ads)
 - [Privacy & Consent (GDPR / CCPA / COPPA)](#privacy--consent-gdpr--ccpa--coppa)
+- [App Tracking Transparency (iOS)](#app-tracking-transparency-ios)
 - [Impression-Level Revenue (ILRD) → Analytics](#impression-level-revenue-ilrd--analytics)
 - [Extending: Game-Specific Subclass](#extending-game-specific-subclass)
 - [Runtime Debug Overlay (F8)](#runtime-debug-overlay-f8)
@@ -204,7 +205,8 @@ Selecting any `LevelPlayHelper` (or your custom subclass) in the Unity hierarchy
 | `androidBannerAdUnitId` / `iosBannerAdUnitId` | string | `""` | Banner Ad Unit ID (empty = disabled). |
 | `bannerPosition` | `BannerPositionPreset` | `BottomCenter` | One of 9 standard LevelPlay banner positions. |
 | `adsConfig` | `AdsConfiguration` | — | Cadence intervals and reduction thresholds. |
-| `consentConfig` | `ConsentConfiguration` | — | GDPR, CCPA/CPRA, and COPPA compliance flags. |
+| `consentConfig` | `ConsentConfiguration` | - | GDPR, CCPA/CPRA, and COPPA compliance flags. |
+| `trackingConfig` | `TrackingConfiguration` | - | ATT request toggle and the `NSUserTrackingUsageDescription` purpose string (iOS). |
 | `enableTestSuite` | bool | `false` | Launches on-device LevelPlay Test Suite after init. |
 | `enableDebugOverlay` | bool | `true` | Enables the runtime `ADS DBG` / `F8` diagnostic overlay. |
 
@@ -216,6 +218,7 @@ Selecting any `LevelPlayHelper` (or your custom subclass) in the Unity hierarchy
 - `LevelPlayHelper.Instance`: Static singleton access.
 - `LevelPlayHelper.Instance.Initialize()`: Applies privacy settings and initializes the SDK.
 - `LevelPlayHelper.Instance.IsSdkInitialized`: True once initialization finishes.
+- `LevelPlayHelper.Instance.TrackingState`: Current `TrackingAuthorizationState` (`NotSupported` outside iOS).
 - `LevelPlayHelper.Instance.SetUserConsent(bool)`: Updates and persists GDPR consent in `PlayerPrefs`.
 
 ### Ad Display
@@ -238,6 +241,32 @@ LevelPlayHelper.OnInterstitialClosed  += () => { /* Resume gameplay */ };
 LevelPlayHelper.OnRewardedAdGranted   += () => { /* Reward granted */ };
 LevelPlayHelper.OnAdRevenuePaid       += (adUnitId, revenue) => { /* ILRD analytics */ };
 LevelPlayHelper.OnImpressionDataReady += data => { /* Raw SDK payload (background thread) */ };
+LevelPlayHelper.OnTrackingAuthorizationCompleted += state => { /* ATT resolved (iOS) */ };
+```
+
+---
+
+## App Tracking Transparency (iOS)
+
+`LevelPlayHelper` resolves ATT **before** `LevelPlay.Init()` - the SDK reads the advertising identifier during initialization, so a request later in the session is too late for personalized fill.
+
+- `TrackingConfig.requestAuthorization` (default `true`) requests the native alert on iOS 14.5+.
+- `TrackingConfig.usageDescription` is written to `NSUserTrackingUsageDescription` by the package's `[PostProcessBuild]` step. Keep it specific - Apple rejects missing or vague purpose strings.
+- The native alert is shown once per install. The helper only requests it while the status is `NotDetermined`.
+- `TrackingState` exposes the result and `OnTrackingAuthorizationCompleted` fires when it is known.
+
+### Optional pre-prompt (project-side, localized)
+
+If you show a screen before the native alert, assign a coroutine before the helper initializes. The helper calls the ATT API when the coroutine completes. The pre-prompt must **not** call ATT itself and must offer a single "Continue"/"Next" action (App Store guideline 5.1.1(iv)).
+
+```csharp
+LevelPlayHelper.PreTrackingPrompt = ShowTrackingPrePrompt;
+
+private IEnumerator ShowTrackingPrePrompt()
+{
+    myDialog.SetActive(true);
+    yield return new WaitUntil(() => !myDialog.activeSelf);
+}
 ```
 
 ---

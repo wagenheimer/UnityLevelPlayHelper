@@ -1692,21 +1692,55 @@ namespace Wagenheimer.LevelPlayHelper.Editor
 
         void CheckIosAtt()
         {
-            var usesAtt = apiUsage.ContainsKey("ATT");
-            Add(usesAtt ? CheckStatus.Pass : CheckStatus.Warning, "App Tracking Transparency implemented",
-                usesAtt
-                    ? "ATT APIs are called from project code. Keep the request before LevelPlay.Init() so personalized ads can fill."
-                    : "No ATT call detected (ATTrackingStatusBinding / ATTrackingManager). Required on iOS 14.5+: Apple demands authorization before accessing the advertising identifier, and fill rate depends on it.",
-                "https://docs.unity.com/en-us/grow/levelplay/sdk/unity/regulation-advanced-settings");
+            var helper = LevelPlayHelperLocator.FindPreferred();
+            if (helper == null)
+            {
+                Add(CheckStatus.Warning, "App Tracking Transparency implemented",
+                    "No LevelPlayHelper found, so the package cannot handle ATT. Add the helper to a persistent GameObject before any ad call.",
+                    "https://docs.unity.com/en-us/grow/levelplay/sdk/unity/regulation-advanced-settings");
+                return;
+            }
+
+            var config = helper.TrackingConfig;
+            var enabled = config == null || config.requestAuthorization;
+
+            Add(enabled ? CheckStatus.Pass : CheckStatus.Warning, "App Tracking Transparency built into LevelPlayHelper",
+                enabled
+                    ? "The helper resolves ATT before LevelPlay.Init(), so the SDK can read the advertising identifier when the player allows it. If you show a pre-prompt, assign LevelPlayHelper.PreTrackingPrompt before init and keep a single Continue/Next action."
+                    : "ATT is disabled in the helper, so the SDK runs without the advertising identifier and personalized fill is lower. Enable requestAuthorization unless a CMP handles tracking for you.",
+                "https://docs.unity.com/en-us/grow/levelplay/sdk/unity/regulation-advanced-settings")
+                .WithFacts(
+                    "requestAuthorization: " + enabled,
+                    "pre-prompt: optional, set LevelPlayHelper.PreTrackingPrompt before init");
         }
 
         void CheckIosTrackingUsageDescription()
         {
-            var hasKey = apiUsage.ContainsKey("NSUserTrackingUsageDescription");
-            Add(hasKey ? CheckStatus.Pass : CheckStatus.Warning, "NSUserTrackingUsageDescription in Info.plist",
-                hasKey
-                    ? "A post-build step writes NSUserTrackingUsageDescription into Info.plist."
-                    : "No post-build writer for NSUserTrackingUsageDescription found. Unity 6 has no Player Settings field for it, so add it via a [PostProcessBuild] step - Apple rejects vague or missing descriptions.",
+            var helper = LevelPlayHelperLocator.FindPreferred();
+            if (helper == null)
+            {
+                Add(CheckStatus.Warning, "NSUserTrackingUsageDescription in Info.plist",
+                    "No LevelPlayHelper found, so the package cannot write the purpose string.",
+                    "https://docs.unity.com/en-us/grow/levelplay/sdk/unity/regulation-advanced-settings");
+                return;
+            }
+
+            var config = helper.TrackingConfig;
+            var enabled = config == null || config.requestAuthorization;
+            var description = config != null ? config.usageDescription : new TrackingConfiguration().usageDescription;
+
+            if (!enabled)
+            {
+                Add(CheckStatus.Info, "NSUserTrackingUsageDescription in Info.plist",
+                    "ATT is disabled in the helper, so no purpose string is written. If project code requests ATT, it must write this key itself.");
+                return;
+            }
+
+            var hasDescription = !string.IsNullOrWhiteSpace(description);
+            Add(hasDescription ? CheckStatus.Pass : CheckStatus.Fail, "NSUserTrackingUsageDescription in Info.plist",
+                hasDescription
+                    ? "LevelPlayHelper writes this purpose string at build time: \"" + description.Trim() + "\""
+                    : "The helper's ATT purpose string is empty. Set it in the LevelPlayHelper inspector - Apple rejects a missing or vague NSUserTrackingUsageDescription.",
                 "https://docs.unity.com/en-us/grow/levelplay/sdk/unity/regulation-advanced-settings");
         }
 

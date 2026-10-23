@@ -5,6 +5,17 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.13.0] - 2026-10-22
+
+### Added
+- Built-in App Tracking Transparency handling on iOS: the helper resolves ATT before `LevelPlay.Init()` and exposes `TrackingState` / `OnTrackingAuthorizationCompleted`.
+- Optional `LevelPlayHelper.PreTrackingPrompt` coroutine hook for project-side, localized pre-prompts (single Continue/Next action).
+- Build postprocessor writes `NSUserTrackingUsageDescription` from the new `TrackingConfiguration` inspector fields.
+- Setup checklist validates built-in ATT and the purpose string instead of scanning project sources.
+
+### Changed
+- `Initialize()` now runs as a coroutine so ATT can complete before the SDK init; `IsSdkInitialized` and the init events are unchanged.
+
 ## [2.12.2] - 2026-10-06
 
 ### Changed
