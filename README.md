@@ -239,9 +239,25 @@ All events are **static**, allowing subscription from any system without holding
 LevelPlayHelper.OnSdkInitialized      += config => { /* SDK ready */ };
 LevelPlayHelper.OnInterstitialClosed  += () => { /* Resume gameplay */ };
 LevelPlayHelper.OnRewardedAdGranted   += () => { /* Reward granted */ };
+LevelPlayHelper.OnAdDisplayed         += format => { /* Pause game audio */ };
+LevelPlayHelper.OnAdClosed            += format => { /* Resume game audio */ };
 LevelPlayHelper.OnAdRevenuePaid       += (adUnitId, revenue) => { /* ILRD analytics */ };
 LevelPlayHelper.OnImpressionDataReady += data => { /* Raw SDK payload (background thread) */ };
 LevelPlayHelper.OnTrackingAuthorizationCompleted += state => { /* ATT resolved (iOS) */ };
+```
+
+`OnAdClosed` fires for both `"Interstitial"` and `"Rewarded"` (including a skipped rewarded),
+so it is the right hook to restore anything paused when the ad opened:
+
+```csharp
+LevelPlayHelper.OnAdDisplayed += format =>
+{
+    if (format != "Banner") AdAudioPause.Pause(); // e.g. AudioListener.pause = true
+};
+LevelPlayHelper.OnAdClosed += format =>
+{
+    if (format != "Banner") AdAudioPause.Resume();
+};
 ```
 
 ---
@@ -254,6 +270,19 @@ LevelPlayHelper.OnTrackingAuthorizationCompleted += state => { /* ATT resolved (
 - `TrackingConfig.usageDescription` is written to `NSUserTrackingUsageDescription` by the package's `[PostProcessBuild]` step. Keep it specific - Apple rejects missing or vague purpose strings.
 - The native alert is shown once per install. The helper only requests it while the status is `NotDetermined`.
 - `TrackingState` exposes the result and `OnTrackingAuthorizationCompleted` fires when it is known.
+
+### Waiting for an external consent owner
+
+When another package owns the ATT request (for example `com.wagenheimer.tracking`), set
+`TrackingConfig.requestAuthorization` to **false** and give the helper a gate before it is created:
+
+```csharp
+LevelPlayHelper.InitializationGate = () => !TrackingConsent.IsRequired || TrackingConsent.IsResolved;
+```
+
+`Initialize()` (including the automatic call from `Start`) waits for the gate (60s by default,
+`InitializationGateTimeoutSeconds`) before calling `LevelPlay.Init()`. If the prefab is created
+before the answer, the SDK still does not read the IDFA too early.
 
 ### Optional pre-prompt (project-side, localized)
 

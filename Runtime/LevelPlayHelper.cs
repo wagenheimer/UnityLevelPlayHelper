@@ -120,6 +120,12 @@ namespace Wagenheimer.LevelPlayHelper
         /// <summary>Raised when an interstitial is dismissed.</summary>
         public static event Action OnInterstitialClosed;
 
+        /// <summary>
+        /// Raised when a full-screen ad is dismissed: "Interstitial" or "Rewarded". Use it to
+        /// restore anything paused while the ad was on screen (game audio, timers, input).
+        /// </summary>
+        public static event Action<string> OnAdClosed;
+
         /// <summary>Raised when a rewarded ad grants its reward.</summary>
         public static event Action OnRewardedAdGranted;
 
@@ -147,6 +153,17 @@ namespace Wagenheimer.LevelPlayHelper
         /// ATT API when it completes. Use a single "Continue"/"Next" action (App Store 5.1.1(iv)).
         /// </summary>
         public static Func<IEnumerator> PreTrackingPrompt { get; set; }
+
+        /// <summary>
+        /// Optional external consent gate. When set and it returns false, <see cref="Initialize"/>
+        /// waits (up to <see cref="InitializationGateTimeoutSeconds"/>) before initializing the SDK.
+        /// Set it before the helper is created when another package owns the ATT request (for
+        /// example com.wagenheimer.tracking), so the SDK never reads the IDFA too early.
+        /// </summary>
+        public static Func<bool> InitializationGate { get; set; }
+
+        /// <summary>Maximum seconds <see cref="InitializationGate"/> may keep initialization waiting.</summary>
+        public static float InitializationGateTimeoutSeconds { get; set; } = 60f;
 
         /// <summary>Raised once the ATT status is resolved (immediately on non-iOS platforms).</summary>
         public static event Action<TrackingAuthorizationState> OnTrackingAuthorizationCompleted;
@@ -227,6 +244,7 @@ namespace Wagenheimer.LevelPlayHelper
         // SDK init lifecycle. The overlay uses these to explain a stuck initialization
         // (the classic "nothing loads and the log stays empty").
         private SdkInitState initState = SdkInitState.NotStarted;
+        private bool waitingForInitializationGate;
         private DateTime? initStartedUtc;
         private string lastInitError;
         private bool adObjectsCreated;
@@ -462,6 +480,9 @@ namespace Wagenheimer.LevelPlayHelper
             if (initState == SdkInitState.NotStarted)
                 return "SDK initialization has not started yet (Initialize() was never reached).";
 
+            if (initState == SdkInitState.WaitingForConsent)
+                return "Waiting for the external consent gate (ATT) before initializing the SDK...";
+
             if (initState == SdkInitState.Initializing)
             {
                 if (IsIos && trackingState == TrackingAuthorizationState.NotDetermined)
@@ -651,8 +672,17 @@ namespace Wagenheimer.LevelPlayHelper
         /// </summary>
         public void Initialize()
         {
-            if (isSdkInitialized || initState == SdkInitState.Initializing)
+            if (isSdkInitialized || initState == SdkInitState.Initializing || waitingForInitializationGate)
                 return;
+
+            if (InitializationGate != null && !InitializationGate())
+            {
+                waitingForInitializationGate = true;
+                initState = SdkInitState.WaitingForConsent;
+                LogAd(AdLogLevel.Info, "Waiting for the external consent gate before initializing LevelPlay...");
+                StartCoroutine(WaitForInitializationGateRoutine());
+                return;
+            }
 
             if (!AdsSupported)
             {
@@ -677,6 +707,26 @@ namespace Wagenheimer.LevelPlayHelper
             lastInitError = null;
 
             StartCoroutine(InitializeRoutine(appKey));
+        }
+
+        /// <summary>
+        /// Waits for <see cref="InitializationGate"/> (bounded) so another consent owner, such as
+        /// com.wagenheimer.tracking, can resolve ATT first even if the helper is created early.
+        /// </summary>
+        private IEnumerator WaitForInitializationGateRoutine()
+        {
+            float deadline = Time.realtimeSinceStartup + Mathf.Max(1f, InitializationGateTimeoutSeconds);
+
+            while (InitializationGate != null && !InitializationGate() && Time.realtimeSinceStartup < deadline)
+                yield return null;
+
+            waitingForInitializationGate = false;
+            initState = SdkInitState.NotStarted;
+
+            if (InitializationGate != null && !InitializationGate())
+                LogAd(AdLogLevel.Warning, "The external consent gate did not open in time - initializing LevelPlay anyway.");
+
+            Initialize();
         }
 
         /// <summary>
@@ -1299,6 +1349,7 @@ namespace Wagenheimer.LevelPlayHelper
         {
             interstitialDiagnostics.State = AdFormatState.Closed;
             LogAd(AdLogLevel.Info, "Interstitial closed.");
+            OnAdClosed?.Invoke(InterstitialFormat);
             OnInterstitialClosed?.Invoke();
             LoadInterstitialWithRetry();
         }
@@ -1367,6 +1418,7 @@ namespace Wagenheimer.LevelPlayHelper
         {
             rewardedDiagnostics.State = AdFormatState.Closed;
             LogAd(AdLogLevel.Info, "Rewarded ad closed.");
+            OnAdClosed?.Invoke(RewardedFormat);
 
 #if UNITY_EDITOR
             // The Editor mock ad does not raise OnAdRewarded in every SDK configuration. Treat a

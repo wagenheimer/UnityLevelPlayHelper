@@ -9,6 +9,9 @@ namespace Wagenheimer.LevelPlayHelper
         /// <summary><see cref="LevelPlayHelper.Initialize"/> has not run yet.</summary>
         NotStarted,
 
+        /// <summary>Initialization is waiting for an external consent gate (for example ATT).</summary>
+        WaitingForConsent,
+
         /// <summary><see cref="Unity.Services.LevelPlay.LevelPlay.Init"/> was called and the callback has not arrived yet.</summary>
         Initializing,
 
