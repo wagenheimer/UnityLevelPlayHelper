@@ -285,7 +285,11 @@ namespace Wagenheimer.LevelPlayHelper.UI
                 ApplyVisibility();
             })
             {
-                text = "ADS DBG"
+                text = "ADS DBG",
+                // Dev overlay: a gamepad Submit focuses the first focusable element in the panel and
+                // activates it, so a focusable pill opened this overlay with any controller button
+                // even with the cursor somewhere else. Pointer clicks keep working.
+                focusable = false
             };
 
             button.style.position = Position.Absolute;
