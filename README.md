@@ -28,6 +28,7 @@ A drop-in, production-ready manager for **Unity LevelPlay (Ads Mediation)**. Add
 - [Fallback Behavior (Rewarded Ads)](#fallback-behavior-rewarded-ads)
 - [Privacy & Consent (GDPR / CCPA / COPPA)](#privacy--consent-gdpr--ccpa--coppa)
 - [App Tracking Transparency (iOS)](#app-tracking-transparency-ios)
+  - [Consent gate (GDPR / CCPA / COPPA)](#consent-gate-gdpr--ccpa--coppa)
 - [Impression-Level Revenue (ILRD) → Analytics](#impression-level-revenue-ilrd--analytics)
 - [Extending: Game-Specific Subclass](#extending-game-specific-subclass)
 - [Runtime Debug Overlay (F8)](#runtime-debug-overlay-f8)
@@ -298,6 +299,38 @@ private IEnumerator ShowTrackingPrePrompt()
 }
 ```
 
+### Consent gate (GDPR / CCPA / COPPA)
+
+`ConsentGate` is the reusable consent owner for projects that must ask before ads
+initialize. Add it next to `LevelPlayHelper` on the same prefab and assign a
+`ConsentLocalization` asset (create one from **Assets > Create > Tools > Wagenheimer >
+Level Play > Consent Localization**).
+
+```text
+LevelPlayHelper.prefab
+  LevelPlayHelper       (ads)
+  ConsentGate           (consent + standard dialog)
+```
+
+What it does:
+
+- stores the answer in `PlayerPrefs` under `UserConsent` (the key the helper already reads);
+- calls `LevelPlayHelper.Instance.SetUserConsent(...)` immediately;
+- while the answer is missing, keeps `LevelPlayHelper.InitializationGate` closed, so
+  `LevelPlay.Init()` waits (60s by default) instead of running without consent;
+- shows the package's standard dialog on first launch, or you can call `Grant()` /
+  `Deny()` from your own UI.
+
+The standard dialog is built at runtime with UI Toolkit - no prefab to import and no
+localization package dependency. It reads every string from the localization asset and
+falls back to English when a language is incomplete. Assign a theme or a legacy `Font`
+on the gate when the default font does not cover your script (for example Korean).
+
+`ConsentLocalization` has one entry per language and a `requiredLanguageCodes` list. The
+**Setup Checklist** (and the LevelPlay Manager) find the gate in your prefabs/scenes and
+report every required language that is missing or has an empty title, body, accept or
+decline string.
+
 ---
 
 ## Fallback Behavior (Rewarded Ads)
@@ -320,6 +353,7 @@ In the Unity Editor and Development Builds, tap the **ADS DBG** button or press 
 - **State Machine Inspection**: Real-time status (`Idle`, `Loading`, `Ready`, `Showing`, `Failed`).
 - **Live Event Log**: Color-coded, thread-safe event log with instant **Copy Report** to clipboard.
 - **Interactive Triggers**: Manually trigger ad loads, shows, banner toggles, and consent testing.
+- **Consent Gate Card**: resolved/consent/stored state, `InitializationGate` status, localization asset and resolved language, missing translations, Grant / Deny / Reset / Show dialog, one-click preview of every language and a copyable consent report.
 
 ---
 

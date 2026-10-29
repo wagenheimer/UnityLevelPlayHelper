@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using System.Linq;
 using System.Text;
 
 using UnityEngine;
@@ -87,6 +88,12 @@ namespace Wagenheimer.LevelPlayHelper.UI
 
         private VisualElement _diagnosisCard;
         private Label _diagnosisLabel;
+
+        private Label _consentLine;
+        private Label _consentMuted;
+        private VisualElement _consentLanguagesRow;
+        private ConsentGate _consentGate;
+        private ConsentLocalization _consentLocalization;
 
         private Pill _sdkPill;
         private Pill _platformPill;
@@ -336,6 +343,7 @@ namespace Wagenheimer.LevelPlayHelper.UI
             var content = scroll.contentContainer;
             content.Add(BuildDiagnosisCard());
             content.Add(BuildStatusCard());
+            content.Add(BuildConsentCard());
             content.Add(BuildFormatsCard());
             content.Add(BuildActionsCard());
             content.Add(BuildLogCard());
@@ -430,6 +438,56 @@ namespace Wagenheimer.LevelPlayHelper.UI
             return card;
         }
 
+        private VisualElement BuildConsentCard()
+        {
+            var card = Card();
+            card.Add(SectionTitle("CONSENT GATE"));
+
+            _consentLine = Body();
+            card.Add(_consentLine);
+
+            _consentMuted = Muted();
+            card.Add(_consentMuted);
+
+            var actions = ActionRow();
+            actions.style.flexWrap = Wrap.Wrap;
+            actions.Add(SmallButton("Show Dialog", ColorAccentCyan, () =>
+            {
+                var gate = ConsentGate.Instance;
+                if (gate != null) gate.ShowDialog();
+            }));
+            actions.Add(SmallButton("Grant", ColorAccentGreen, () =>
+            {
+                var gate = ConsentGate.Instance;
+                if (gate != null) gate.Grant();
+            }));
+            actions.Add(SmallButton("Deny", ColorAccentRed, () =>
+            {
+                var gate = ConsentGate.Instance;
+                if (gate != null) gate.Deny();
+            }));
+            actions.Add(SmallButton("Reset", ColorAccentAmber, () =>
+            {
+                var gate = ConsentGate.Instance;
+                if (gate != null) gate.ResetConsent();
+            }));
+            card.Add(actions);
+
+            var report = ActionRow();
+            report.style.flexWrap = Wrap.Wrap;
+            report.Add(SmallButton("Copy Consent Report", ColorHeaderTo, CopyConsentReport));
+            card.Add(report);
+
+            _consentLanguagesRow = new VisualElement();
+            _consentLanguagesRow.style.flexDirection = FlexDirection.Row;
+            _consentLanguagesRow.style.flexWrap = Wrap.Wrap;
+            _consentLanguagesRow.style.alignItems = Align.Center;
+            _consentLanguagesRow.style.marginTop = 4;
+            card.Add(_consentLanguagesRow);
+
+            return card;
+        }
+
         private VisualElement BuildFormatsCard()
         {
             var card = Card();
@@ -470,16 +528,6 @@ namespace Wagenheimer.LevelPlayHelper.UI
             card.Add(row1);
 
             var row2 = ActionRow();
-            row2.Add(ActionButton("Consent ON", ColorAccentGreen, helper =>
-            {
-                helper.SetUserConsent(true);
-                helper.LogAd(AdLogLevel.Info, "SetUserConsent(true) - re-init to apply.");
-            }));
-            row2.Add(ActionButton("Consent OFF", ColorAccentRed, helper =>
-            {
-                helper.SetUserConsent(false);
-                helper.LogAd(AdLogLevel.Info, "SetUserConsent(false) - re-init to apply.");
-            }));
             row2.Add(ActionButton("Try Show Any", ColorAccentCyan, helper =>
             {
                 bool shown = helper.TryShowAd(() => helper.LogAd(AdLogLevel.Success, "Reward granted via TryShowAd()."));
@@ -559,6 +607,24 @@ namespace Wagenheimer.LevelPlayHelper.UI
             return button;
         }
 
+        /// <summary>Compact button that does not depend on a live LevelPlayHelper instance.</summary>
+        private static Button SmallButton(string text, Color color, Action onClick)
+        {
+            var button = new Button(onClick) { text = text };
+            button.style.flexGrow = 1;
+            button.style.flexBasis = 0;
+            button.style.marginLeft = 2;
+            button.style.marginRight = 2;
+            button.style.marginBottom = 2;
+            button.style.height = 24;
+            button.style.fontSize = 11;
+            button.style.unityFontStyleAndWeight = FontStyle.Bold;
+            button.style.color = Color.white;
+            SetBackground(button, color);
+            SetRadius(button, 4);
+            return button;
+        }
+
         #endregion
 
         #region Refresh
@@ -569,6 +635,7 @@ namespace Wagenheimer.LevelPlayHelper.UI
                 return;
 
             ApplyLayout();
+            RefreshConsent();
 
             var helper = LevelPlayHelper.Instance;
             if (helper == null)
@@ -665,6 +732,152 @@ namespace Wagenheimer.LevelPlayHelper.UI
 
             // ── Log ─────────────────────────────────────────────────────────────
             RefreshLog(helper);
+        }
+
+        // ---------------------------------------------------------------- consent
+
+        private void RefreshConsent()
+        {
+            if (_consentLine == null)
+                return;
+
+            var gate = ConsentGate.Instance;
+            if (gate == null)
+            {
+                _consentLine.text = "No ConsentGate in the running scene. Add it next to LevelPlayHelper.";
+                _consentLine.style.color = ColorAccentRed;
+                _consentMuted.text = "Without a gate the SDK can initialize before the player answers.";
+                _consentMuted.style.color = ColorAccentAmber;
+                _consentLanguagesRow.Clear();
+                _consentGate = null;
+                _consentLocalization = null;
+                return;
+            }
+
+            var localization = gate.Localization;
+            var entry = gate.ResolveEntry();
+            bool resolved = ConsentGate.IsResolved;
+            bool consent = ConsentGate.HasConsent;
+            string stored = PlayerPrefs.HasKey(ConsentGate.ConsentPrefKey)
+                ? PlayerPrefs.GetInt(ConsentGate.ConsentPrefKey, 0).ToString()
+                : "not set";
+            string gateState = LevelPlayHelper.InitializationGate == null
+                ? "not set"
+                : (LevelPlayHelper.InitializationGate() ? "OPEN" : "WAITING");
+
+            _consentLine.text =
+                $"Resolved: {(resolved ? "YES" : "NO")}    Consent: {(consent ? "YES" : "NO")}    " +
+                $"Stored: {stored}    Init gate: {gateState}";
+            _consentLine.style.color = !resolved ? ColorAccentRed : consent ? ColorAccentGreen : ColorAccentAmber;
+
+            if (localization == null)
+            {
+                _consentMuted.text = "Localization: MISSING - the dialog falls back to English.";
+                _consentMuted.style.color = ColorAccentRed;
+            }
+            else
+            {
+                var missing = localization.MissingRequiredLanguages();
+                var available = localization.entries == null
+                    ? "none"
+                    : string.Join(", ", localization.entries
+                        .Where(e => e != null && !string.IsNullOrWhiteSpace(e.languageCode))
+                        .Select(e => e.languageCode.Trim()));
+
+                _consentMuted.text =
+                    $"Localization: {localization.name}    Resolved: {(entry != null ? entry.languageCode : "?")}    " +
+                    $"Available: {available}" +
+                    (missing.Count > 0
+                        ? $"    MISSING: {string.Join(", ", missing)}"
+                        : "    translations OK");
+                _consentMuted.style.color = missing.Count > 0 ? ColorAccentRed : ColorTextMuted;
+            }
+
+            if (_consentGate != gate || _consentLocalization != localization)
+            {
+                _consentGate = gate;
+                _consentLocalization = localization;
+                RebuildConsentLanguages(gate, localization);
+            }
+        }
+
+        private void RebuildConsentLanguages(ConsentGate gate, ConsentLocalization localization)
+        {
+            _consentLanguagesRow.Clear();
+            if (localization == null || localization.entries == null)
+                return;
+
+            var label = new Label("Preview:");
+            label.style.color = ColorTextMuted;
+            label.style.fontSize = 10;
+            label.style.marginRight = 6;
+            _consentLanguagesRow.Add(label);
+
+            foreach (var entry in localization.entries)
+            {
+                if (entry == null || string.IsNullOrWhiteSpace(entry.languageCode))
+                    continue;
+
+                string code = entry.languageCode.Trim();
+                bool complete = localization.HasCompleteEntry(code);
+                var button = SmallButton(code, complete ? ColorAccentCyan : ColorAccentRed,
+                    () => ConsentDialog.ShowPreview(gate, code));
+                button.style.flexGrow = 0;
+                button.style.minWidth = 46;
+                button.style.marginBottom = 3;
+                _consentLanguagesRow.Add(button);
+            }
+        }
+
+        private void CopyConsentReport()
+        {
+            var sb = new StringBuilder();
+            sb.AppendLine("LevelPlay consent report");
+
+            var gate = ConsentGate.Instance;
+            if (gate == null)
+            {
+                sb.AppendLine("ConsentGate: missing");
+            }
+            else
+            {
+                sb.AppendLine("Gate: " + gate.gameObject.name);
+                sb.AppendLine("Resolved: " + (ConsentGate.IsResolved ? "yes" : "no")
+                              + "    Consent: " + (ConsentGate.HasConsent ? "yes" : "no"));
+                sb.AppendLine("PlayerPrefs UserConsent: "
+                              + (PlayerPrefs.HasKey(ConsentGate.ConsentPrefKey)
+                                  ? PlayerPrefs.GetInt(ConsentGate.ConsentPrefKey, 0).ToString()
+                                  : "not set"));
+                sb.AppendLine("InitializationGate: "
+                              + (LevelPlayHelper.InitializationGate == null
+                                  ? "not set"
+                                  : (LevelPlayHelper.InitializationGate() ? "open" : "waiting")));
+
+                var localization = gate.Localization;
+                if (localization == null)
+                {
+                    sb.AppendLine("Localization: missing");
+                }
+                else
+                {
+                    var entry = gate.ResolveEntry();
+                    sb.AppendLine("Localization: " + localization.name);
+                    sb.AppendLine("Resolved language: " + (entry != null ? entry.languageCode : "?"));
+                    sb.AppendLine("Required: " + (localization.requiredLanguageCodes == null
+                        ? "none"
+                        : string.Join(", ", localization.requiredLanguageCodes)));
+                    sb.AppendLine("Missing: " + string.Join(", ", localization.MissingRequiredLanguages()));
+                    sb.AppendLine("Available: " + (localization.entries == null
+                        ? "none"
+                        : string.Join(", ", localization.entries
+                            .Where(e => e != null && !string.IsNullOrWhiteSpace(e.languageCode))
+                            .Select(e => e.languageCode.Trim()))));
+                }
+            }
+
+            GUIUtility.systemCopyBuffer = sb.ToString();
+            if (LevelPlayHelper.Instance != null)
+                LevelPlayHelper.Instance.LogAd(AdLogLevel.Info, "Consent report copied to the clipboard.");
         }
 
         /// <summary>

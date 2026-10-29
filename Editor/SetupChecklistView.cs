@@ -27,7 +27,7 @@ namespace Wagenheimer.LevelPlayHelper.Editor
     /// <see cref="EditorWindow"/>) so it can be hosted inside <see cref="LevelPlaySetupWindow"/>
     /// next to the other tabs. Re-run every check with <see cref="Refresh"/>.
     /// </summary>
-    internal sealed class SetupChecklistView
+    internal sealed partial class SetupChecklistView
     {
         // ---------------------------------------------------------------- model
 
@@ -670,6 +670,8 @@ namespace Wagenheimer.LevelPlayHelper.Editor
             CheckAdUnitMatrix();
             CheckFormatCoverage();
             CheckConsentConfiguration();
+            CheckConsentGate();
+            CheckConsentTranslations();
             CheckCadenceConfiguration();
             CheckTestSuiteFlag();
             CheckPlaceholders();

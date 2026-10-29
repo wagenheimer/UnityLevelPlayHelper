@@ -5,6 +5,23 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.16.0] - 2026-10-29
+
+### Added
+- `ConsentGate` component: persists the ad-consent answer in `PlayerPrefs`
+  (`UserConsent`), pushes it to `SetUserConsent` and keeps `InitializationGate` closed
+  until the player answers.
+- `ConsentLocalization` asset with one entry per language and a required-language list.
+- Standard runtime consent dialog built with UI Toolkit (no prefab, no localization
+  package dependency): Accept / Decline plus optional privacy-policy and terms links.
+  Every string comes from the localization asset, with English fallbacks.
+- Setup checklist now finds the consent gate and fails when a required language is
+  missing or has empty mandatory fields.
+- Runtime debug overlay: new **CONSENT GATE** card with resolved/consent/stored state,
+  `InitializationGate` status, localization asset + resolved language, missing
+  translations, Grant / Deny / Reset / Show dialog, one-click preview of every
+  language and a copyable consent report.
+
 ## [2.15.2] - 2026-10-29
 
 ### Changed
