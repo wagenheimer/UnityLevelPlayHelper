@@ -2,7 +2,7 @@
 
 [![Unity](https://img.shields.io/badge/Unity-2022.3%2B-black?logo=unity)](https://unity.com)
 [![LevelPlay SDK](https://img.shields.io/badge/Ads%20Mediation-9.5.1-blue)](https://docs.unity.com/en-us/grow/levelplay/)
-[![Version](https://img.shields.io/badge/version-2.13.0-brightgreen.svg)](package.json)
+[![Version](https://img.shields.io/github/v/tag/wagenheimer/UnityLevelPlayHelper?label=version&color=brightgreen)](https://github.com/wagenheimer/UnityLevelPlayHelper/releases)
 [![License: MIT](https://img.shields.io/badge/License-MIT-green.svg)](LICENSE)
 [![Install](https://img.shields.io/badge/install-Git%20URL-orange)](#installation-unity-package-manager---git-url)
 
@@ -62,7 +62,7 @@ https://github.com/wagenheimer/UnityLevelPlayHelper.git
 
 To pin a specific release:
 ```
-https://github.com/wagenheimer/UnityLevelPlayHelper.git#v2.11.0
+https://github.com/wagenheimer/UnityLevelPlayHelper.git#v2.15.1
 ```
 
 ### Requirements
