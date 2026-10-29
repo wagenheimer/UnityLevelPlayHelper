@@ -62,7 +62,7 @@ https://github.com/wagenheimer/UnityLevelPlayHelper.git
 
 To pin a specific release:
 ```
-https://github.com/wagenheimer/UnityLevelPlayHelper.git#v2.15.1
+https://github.com/wagenheimer/UnityLevelPlayHelper.git#vX.Y.Z
 ```
 
 ### Requirements
