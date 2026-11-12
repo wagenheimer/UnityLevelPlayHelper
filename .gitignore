@@ -30,3 +30,7 @@ sysinfo.txt
 # OS
 .DS_Store
 Thumbs.db
+
+# Git Bash crash dumps
+*.stackdump
+*.stackdump.meta
