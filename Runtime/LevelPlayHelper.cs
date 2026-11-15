@@ -229,6 +229,9 @@ namespace Wagenheimer.LevelPlayHelper
         private bool isSdkInitialized;
         private bool isInterstitialLoading;
         private bool isRewardedLoading;
+        private float fullscreenBusyUntil;
+        private const float FullscreenBusyTimeoutSeconds = 30f;
+        private const float DeferredLoadDelaySeconds = 3f;
         private int interstitialRetryAttempt;
         private int rewardedRetryAttempt;
 
@@ -1040,6 +1043,9 @@ namespace Wagenheimer.LevelPlayHelper
 
         private void LoadAllAds()
         {
+            if (DeferLoadWhileBusy())
+                return;
+
             if (!CanLoadAds)
                 return;
 
@@ -1058,9 +1064,30 @@ namespace Wagenheimer.LevelPlayHelper
             }
         }
 
+        /// <summary>
+        /// True while a full-screen ad is on screen (or was just asked to show). LevelPlay rejects loads in that
+        /// window with error 629 "Load is called while ad is showing", which used to burn the retry budget and
+        /// leave the next ad unavailable.
+        /// </summary>
+        private bool IsFullscreenBusy => Time.unscaledTime < fullscreenBusyUntil;
+
+        private void MarkFullscreenBusy() => fullscreenBusyUntil = Time.unscaledTime + FullscreenBusyTimeoutSeconds;
+
+        private void MarkFullscreenFree() => fullscreenBusyUntil = 0f;
+
+        private bool DeferLoadWhileBusy()
+        {
+            if (!IsFullscreenBusy)
+                return false;
+
+            if (!IsInvoking(nameof(LoadAllAds)))
+                Invoke(nameof(LoadAllAds), DeferredLoadDelaySeconds);
+            return true;
+        }
+
         private void LoadInterstitialWithRetry()
         {
-            if (!CanLoadAds || interstitialAd == null || isInterstitialLoading)
+            if (!CanLoadAds || interstitialAd == null || isInterstitialLoading || DeferLoadWhileBusy())
                 return;
 
             isInterstitialLoading = true;
@@ -1070,7 +1097,7 @@ namespace Wagenheimer.LevelPlayHelper
 
         private void LoadRewardedWithRetry()
         {
-            if (!CanLoadAds || rewardedAd == null || isRewardedLoading)
+            if (!CanLoadAds || rewardedAd == null || isRewardedLoading || DeferLoadWhileBusy())
                 return;
 
             isRewardedLoading = true;
@@ -1149,6 +1176,7 @@ namespace Wagenheimer.LevelPlayHelper
         {
             if (IsInterstitialReady())
             {
+                MarkFullscreenBusy();
                 interstitialAd.ShowAd();
             }
             else
@@ -1168,13 +1196,16 @@ namespace Wagenheimer.LevelPlayHelper
             if (IsRewardedAdReady())
             {
                 onRewardSuccessCallback = onReward;
+                MarkFullscreenBusy();
                 rewardedAd.ShowAd();
             }
             else if (IsInterstitialReady())
             {
                 Debug.LogWarning("[LevelPlayHelper] Rewarded not ready. Showing interstitial and granting reward.");
+                MarkFullscreenBusy();
                 interstitialAd.ShowAd();
                 onReward?.Invoke();
+                // The rewarded reload is deferred until the interstitial closes (see DeferLoadWhileBusy).
                 LoadRewardedWithRetry();
             }
             else
@@ -1213,6 +1244,7 @@ namespace Wagenheimer.LevelPlayHelper
         /// </summary>
         public void ForceReloadAds()
         {
+            MarkFullscreenFree();
             isInterstitialLoading = false;
             isRewardedLoading = false;
             interstitialDiagnostics.IsLoading = false;
@@ -1341,17 +1373,19 @@ namespace Wagenheimer.LevelPlayHelper
             interstitialDiagnostics.LastErrorCode = error?.ErrorCode.ToString();
             interstitialDiagnostics.LastErrorMessage = error?.ErrorMessage;
             LogAd(AdLogLevel.Error, $"Interstitial DISPLAY FAILED: {error.ErrorMessage}");
+            MarkFullscreenFree();
             OnAdDisplayFailed?.Invoke(InterstitialFormat, error.ErrorMessage);
-            LoadInterstitialWithRetry();
+            LoadAllAds();
         }
 
         private void OnInterstitialClosedInternal(LevelPlayAdInfo adInfo)
         {
             interstitialDiagnostics.State = AdFormatState.Closed;
             LogAd(AdLogLevel.Info, "Interstitial closed.");
+            MarkFullscreenFree();
             OnAdClosed?.Invoke(InterstitialFormat);
             OnInterstitialClosed?.Invoke();
-            LoadInterstitialWithRetry();
+            LoadAllAds();
         }
 
         private void OnInterstitialClicked(LevelPlayAdInfo adInfo) =>
@@ -1397,9 +1431,10 @@ namespace Wagenheimer.LevelPlayHelper
             rewardedDiagnostics.LastErrorCode = error?.ErrorCode.ToString();
             rewardedDiagnostics.LastErrorMessage = error?.ErrorMessage;
             LogAd(AdLogLevel.Error, $"Rewarded DISPLAY FAILED: {error.ErrorMessage}");
+            MarkFullscreenFree();
             OnAdDisplayFailed?.Invoke(RewardedFormat, error.ErrorMessage);
             onRewardSuccessCallback = null;
-            LoadRewardedWithRetry();
+            LoadAllAds();
         }
 
         private void OnRewardedReceived(LevelPlayAdInfo adInfo, LevelPlayReward reward)
@@ -1435,7 +1470,8 @@ namespace Wagenheimer.LevelPlayHelper
 #endif
 
             onRewardSuccessCallback = null;
-            LoadRewardedWithRetry();
+            MarkFullscreenFree();
+            LoadAllAds();
         }
 
         private void OnRewardedClicked(LevelPlayAdInfo adInfo) =>
