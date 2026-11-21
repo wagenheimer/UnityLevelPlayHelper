@@ -5,6 +5,27 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.19.0] - 2026-11-21
+
+### Added
+- Show watchdog: if `ShowAd()` yields no displayed / failed / closed callback within 50 s of foreground time, the helper
+  logs a full snapshot, raises `OnAdShowTimeout(format, report)` then `OnAdDisplayFailed(format, "show timeout")`
+- Load watchdog: a load with no callback for 45 s is abandoned and retried (the loading flag no longer sticks forever)
+- App lifecycle: retries stop while paused; resume restarts loading and the retry budget
+- Offline handling: loads wait for network without burning the retry budget
+- Per-format timeline (requested / displayed / closed, display latency, show/load timeouts, retries exhausted) and
+  environment info (network, memory, app state) in `BuildDiagnosticReport(int logLines = 60)`
+
+### Changed
+- Load failures (no fill 509 included) are now **warnings**, not errors, so they stop flooding crash reporters
+- Retry backoff is exponential with jitter (2 s .. 120 s) and capped at 10 attempts; after that loading pauses until a
+  show request, app resume or `ForceReloadAds()`. SDK init and banner retries are bounded too
+- LevelPlay error 629 (load while showing) no longer counts as a failure
+- Rewarded/Interstitial/Banner callbacks tolerate null errors; every public event is raised through an isolated
+  `Raise` so a throwing subscriber cannot skip the reload after close or the reward bookkeeping
+- `IsAdReady()` / `ShowAd()` / `LoadAd()` native exceptions are caught and reported
+- Rewarded ad object is destroyed with the helper (was only done for the interstitial)
+
 ## [2.18.0] - 2026-11-15
 
 ### Added

@@ -141,6 +141,13 @@ namespace Wagenheimer.LevelPlayHelper
         /// <summary>Raised when an ad format fails to display (format, error message).</summary>
         public static event Action<string, string> OnAdDisplayFailed;
 
+        /// <summary>
+        /// Raised when <c>ShowAd()</c> was called but the SDK never reported displayed / failed / closed
+        /// within ~50 s of foreground time (format, full diagnostic report). Attach the report to your
+        /// crash reporter; <see cref="OnAdDisplayFailed"/> follows with "show timeout".
+        /// </summary>
+        public static event Action<string, string> OnAdShowTimeout;
+
         /// <summary>Ad Unit ID + estimated revenue in USD for every paid impression.</summary>
         public static event Action<string, double> OnAdRevenuePaid;
 
@@ -211,8 +218,14 @@ namespace Wagenheimer.LevelPlayHelper
         #region Core State
 
         private const string CONSENT_KEY = "UserConsent";
-        private const int MaxRetryAttempt = 6;
+        private const int MaxLoadRetryAttempts = 10;
         private const float BaseRetryDelaySeconds = 2f;
+        private const float MaxRetryDelaySeconds = 120f;
+        private const float LoadTimeoutSeconds = 45f;
+        private const float ShowTimeoutSeconds = 50f;
+        private const float OfflineRecheckSeconds = 10f;
+        private const float OfflineGiveUpSeconds = 60f;
+        private const int MaxInitAttempts = 8;
 
         /// <summary>Ring-buffer size of the central diagnostic log.</summary>
         private const int MaxLogEntries = 500;
@@ -242,6 +255,12 @@ namespace Wagenheimer.LevelPlayHelper
         private const float DeferredLoadDelaySeconds = 3f;
         private int interstitialRetryAttempt;
         private int rewardedRetryAttempt;
+
+        // Bumped whenever a show request ends (displayed / failed / closed) so the matching watchdog stops.
+        private int showWatchToken;
+        private bool isPaused;
+        private DateTime? pausedAtUtc;
+        private int initFailureCount;
 
         private TrackingAuthorizationState trackingState = TrackingAuthorizationState.Unknown;
 
@@ -545,7 +564,7 @@ namespace Wagenheimer.LevelPlayHelper
         /// Builds a copy/paste friendly diagnostic report (SDK state, credentials, per-format
         /// state machine, last errors and the log tail) suitable for a bug report.
         /// </summary>
-        public string BuildDiagnosticReport()
+        public string BuildDiagnosticReport(int logLines = 60)
         {
             var sb = new StringBuilder();
             sb.AppendLine("=== LevelPlay Helper - diagnostic report ===");
@@ -564,18 +583,26 @@ namespace Wagenheimer.LevelPlayHelper
             sb.AppendLine($"Consent           : GDPR={(consentConfig.enableGDPRConsent ? "on" : "off")} CCPA={(consentConfig.ccpaOptOut ? "on" : "off")} COPPA={(consentConfig.coppaChildDirected ? "on" : "off")} stored={PlayerPrefs.GetInt(CONSENT_KEY, 0) == 1}");
             sb.AppendLine($"ATT               : {trackingState} (request={(trackingConfig.requestAuthorization ? "on" : "off")}, usage description={(string.IsNullOrWhiteSpace(trackingConfig.usageDescription) ? "MISSING" : "set")})");
             sb.AppendLine($"Test suite        : {enableTestSuite}");
+            sb.AppendLine($"OS                : {SystemInfo.operatingSystem}");
+            sb.AppendLine($"Memory (MB)       : system={SystemInfo.systemMemorySize} gpu={SystemInfo.graphicsMemorySize} managed={GC.GetTotalMemory(false) / (1024 * 1024)}");
+            sb.AppendLine($"Network           : {Application.internetReachability}{(wasOffline ? " (deferring loads)" : string.Empty)}");
+            sb.AppendLine($"App state         : {(isPaused ? "paused" : "active")}, uptime {Time.realtimeSinceStartup:F0}s");
+            sb.AppendLine($"Full-screen busy  : {IsFullscreenBusy} (loading indicator={adLoadingRaised}, pending reward callback={onRewardSuccessCallback != null}, show watch armed={IsShowWatchArmed})");
+            sb.AppendLine($"Init failures     : {initFailureCount}");
             sb.AppendLine();
             sb.AppendLine(interstitialDiagnostics.ToSummaryLine(IsInterstitialReady()));
             AppendLastError(sb, interstitialDiagnostics);
+            AppendTimeline(sb, interstitialDiagnostics);
             sb.AppendLine(rewardedDiagnostics.ToSummaryLine(IsRewardedAdReady()));
             AppendLastError(sb, rewardedDiagnostics);
+            AppendTimeline(sb, rewardedDiagnostics);
             sb.AppendLine(bannerDiagnostics.ToSummaryLine(bannerAd != null));
             AppendLastError(sb, bannerDiagnostics);
             sb.AppendLine();
             sb.AppendLine($"Diagnosis         : {Diagnose() ?? "healthy"}");
             sb.AppendLine();
             sb.AppendLine("--- last events ---");
-            foreach (var entry in SnapshotLog(60))
+            foreach (var entry in SnapshotLog(logLines))
                 sb.AppendLine(entry.ToLine());
             return sb.ToString();
         }
@@ -587,6 +614,19 @@ namespace Wagenheimer.LevelPlayHelper
             else if (!string.IsNullOrEmpty(diag.LastAdInfo))
                 sb.AppendLine($"    last ad info: {diag.LastAdInfo}");
         }
+
+        private bool IsShowWatchArmed => interstitialDiagnostics.LastShowRequestedUtc.HasValue || rewardedDiagnostics.LastShowRequestedUtc.HasValue;
+
+        private static void AppendTimeline(StringBuilder sb, AdFormatDiagnostics diag)
+        {
+            if (!diag.LastShowRequestedUtc.HasValue && !diag.LastLoadedAtUtc.HasValue)
+                return;
+
+            sb.AppendLine($"    timeline: loaded {Ago(diag.LastLoadedAtUtc)}, show requested {Ago(diag.LastShowRequestedUtc)}, displayed {Ago(diag.LastDisplayedUtc)}, closed {Ago(diag.LastClosedUtc)}");
+        }
+
+        private static string Ago(DateTime? utc) =>
+            utc.HasValue ? $"{(DateTime.UtcNow - utc.Value).TotalSeconds:F0}s ago" : "never";
 
         private static string Mask(string value)
         {
@@ -913,7 +953,13 @@ namespace Wagenheimer.LevelPlayHelper
             CreateAdObjects();
             LoadAllAds();
 #else
-            LogAd(AdLogLevel.Error, $"SDK init callback did not arrive after {timeoutSeconds:F0}s. Check the App Key, the network connection and the LevelPlay dashboard setup.");
+            // A slow device or network can take longer than this, and OnInitSuccess still works afterwards,
+            // so the first notice is only a warning; a second look 24 s later decides whether it is an error.
+            LogAd(AdLogLevel.Warning, $"SDK init callback did not arrive after {timeoutSeconds:F0}s (network={Application.internetReachability}). Still waiting.");
+            yield return new WaitForSecondsRealtime(24f);
+
+            if (!isSdkInitialized && initState == SdkInitState.CallbackMissing)
+                LogAd(AdLogLevel.Error, "SDK init callback still missing after 30s. Check the App Key, the network connection and the LevelPlay dashboard setup.");
 #endif
         }
 
@@ -955,12 +1001,13 @@ namespace Wagenheimer.LevelPlayHelper
 
             isSdkInitialized = true;
             initState = SdkInitState.Initialized;
-            LogAd(AdLogLevel.Success, "SDK initialized successfully.");
+            initFailureCount = 0;
+            LogAd(AdLogLevel.Success, $"SDK initialized successfully ({(InitElapsedSeconds ?? 0f):F1}s after Init).");
 
             CreateAdObjects();
             LoadAllAds();
 
-            OnSdkInitialized?.Invoke(config);
+            Raise(OnSdkInitialized, config, nameof(OnSdkInitialized));
 
             if (enableTestSuite)
                 LevelPlay.LaunchTestSuite();
@@ -969,10 +1016,20 @@ namespace Wagenheimer.LevelPlayHelper
         private void OnInitFailed(LevelPlayInitError error)
         {
             initState = SdkInitState.Failed;
-            lastInitError = $"{error.ErrorCode}: {error.ErrorMessage}";
-            LogAd(AdLogLevel.Error, $"SDK initialization failed: {error.ErrorMessage}. Retrying in 10s...");
-            OnSdkInitializeFailed?.Invoke(error.ErrorMessage);
-            Invoke(nameof(Initialize), 10f);
+            initFailureCount++;
+            lastInitError = $"{error?.ErrorCode}: {error?.ErrorMessage ?? "no details"}";
+            Raise(OnSdkInitializeFailed, error?.ErrorMessage ?? "unknown", nameof(OnSdkInitializeFailed));
+
+            if (initFailureCount >= MaxInitAttempts)
+            {
+                LogAd(AdLogLevel.Error, $"SDK initialization failed {initFailureCount} times ({lastInitError}). Giving up until the app resumes or Initialize() is called again.");
+                return;
+            }
+
+            float delay = Mathf.Min(60f, 5f * Mathf.Pow(2f, initFailureCount - 1)) * UnityEngine.Random.Range(0.8f, 1.2f);
+            LogAd(AdLogLevel.Warning, $"SDK initialization failed ({lastInitError}). Attempt {initFailureCount}/{MaxInitAttempts}, retrying in {delay:F0}s.");
+            CancelInvoke(nameof(Initialize));
+            Invoke(nameof(Initialize), delay);
         }
 
         private void CreateAdObjects()
@@ -981,6 +1038,7 @@ namespace Wagenheimer.LevelPlayHelper
                 return;
 
             adObjectsCreated = true;
+            StartCoroutine(LoadWatchdogRoutine());
 
             var interstitialId = EffectiveInterstitialAdUnitId;
             if (!string.IsNullOrEmpty(interstitialId))
@@ -1049,33 +1107,73 @@ namespace Wagenheimer.LevelPlayHelper
 
         #region Loading
 
+        private bool wasOffline;
+        private DateTime? offlineSinceUtc;
+        private float nextReadyCheckLogAt;
+
+        /// <summary>LevelPlay error 629: "Load is called while ad is showing". Not a real failure.</summary>
+        private const int LoadWhileShowingErrorCode = 629;
+
+        /// <summary>LevelPlay error 509: mediation had no fill. Expected and frequent, not a bug.</summary>
+        private const int NoFillErrorCode = 509;
+
         private void LoadAllAds()
         {
             if (DeferLoadWhileBusy())
                 return;
 
-            if (!CanLoadAds)
+            if (!CanLoadAds || DeferLoadWhileOffline())
                 return;
 
-            if (interstitialAd != null && !interstitialAd.IsAdReady() && !isInterstitialLoading)
+            RequestInterstitialLoad();
+            RequestRewardedLoad();
+        }
+
+        private void RequestInterstitialLoad()
+        {
+            if (interstitialAd == null || isInterstitialLoading || IsInterstitialReady())
+                return;
+
+            isInterstitialLoading = true;
+            interstitialDiagnostics.RetriesExhausted = false;
+            MarkLoading(interstitialDiagnostics);
+
+            try
             {
-                isInterstitialLoading = true;
-                MarkLoading(interstitialDiagnostics);
                 interstitialAd.LoadAd();
             }
-
-            if (rewardedAd != null && !rewardedAd.IsAdReady() && !isRewardedLoading)
+            catch (Exception e)
             {
-                isRewardedLoading = true;
-                MarkLoading(rewardedDiagnostics);
+                isInterstitialLoading = false;
+                interstitialRetryAttempt++;
+                ScheduleLoadRetry(interstitialDiagnostics, "LoadAdThrew", e.Message, interstitialRetryAttempt, nameof(LoadInterstitialWithRetry));
+            }
+        }
+
+        private void RequestRewardedLoad()
+        {
+            if (rewardedAd == null || isRewardedLoading || IsRewardedAdReady())
+                return;
+
+            isRewardedLoading = true;
+            rewardedDiagnostics.RetriesExhausted = false;
+            MarkLoading(rewardedDiagnostics);
+
+            try
+            {
                 rewardedAd.LoadAd();
+            }
+            catch (Exception e)
+            {
+                isRewardedLoading = false;
+                rewardedRetryAttempt++;
+                ScheduleLoadRetry(rewardedDiagnostics, "LoadAdThrew", e.Message, rewardedRetryAttempt, nameof(LoadRewardedWithRetry));
             }
         }
 
         /// <summary>
-        /// True while a full-screen ad is on screen (or was just asked to show). LevelPlay rejects loads in that
-        /// window with error 629 "Load is called while ad is showing", which used to burn the retry budget and
-        /// leave the next ad unavailable.
+        /// "Loading ad..." indicator: raised from the moment a full-screen ad is requested until it is
+        /// on screen (or failed / closed / timed out). A safety timer ends it if no callback arrives.
         /// </summary>
         private void BeginAdLoading()
         {
@@ -1083,7 +1181,7 @@ namespace Wagenheimer.LevelPlayHelper
             Invoke(nameof(EndAdLoading), FullscreenBusyTimeoutSeconds * 2f);
             if (adLoadingRaised) return;
             adLoadingRaised = true;
-            OnAdLoadingChanged?.Invoke(true);
+            Raise(OnAdLoadingChanged, true, nameof(OnAdLoadingChanged));
         }
 
         private void EndAdLoading()
@@ -1091,9 +1189,13 @@ namespace Wagenheimer.LevelPlayHelper
             CancelInvoke(nameof(EndAdLoading));
             if (!adLoadingRaised) return;
             adLoadingRaised = false;
-            OnAdLoadingChanged?.Invoke(false);
+            Raise(OnAdLoadingChanged, false, nameof(OnAdLoadingChanged));
         }
 
+        /// <summary>
+        /// True while a full-screen ad is on screen (or was just asked to show). LevelPlay rejects loads in that
+        /// window with error 629, which used to burn the retry budget and leave the next ad unavailable.
+        /// </summary>
         private bool IsFullscreenBusy => Time.unscaledTime < fullscreenBusyUntil;
 
         private void MarkFullscreenBusy() => fullscreenBusyUntil = Time.unscaledTime + FullscreenBusyTimeoutSeconds;
@@ -1110,28 +1212,146 @@ namespace Wagenheimer.LevelPlayHelper
             return true;
         }
 
+        /// <summary>
+        /// Waits (without burning the retry budget) while the device reports no network. A false
+        /// "NotReachable" exists on some Android builds (VPN, captive portals), so after
+        /// <see cref="OfflineGiveUpSeconds"/> the load is attempted anyway.
+        /// </summary>
+        private bool DeferLoadWhileOffline()
+        {
+            if (Application.internetReachability != NetworkReachability.NotReachable)
+            {
+                if (wasOffline)
+                {
+                    wasOffline = false;
+                    offlineSinceUtc = null;
+                    LogAd(AdLogLevel.Info, "Network is reachable again - resuming ad loads.");
+                }
+
+                return false;
+            }
+
+            if (!wasOffline)
+            {
+                wasOffline = true;
+                offlineSinceUtc = DateTime.UtcNow;
+                LogAd(AdLogLevel.Warning, "No network reachability - ad loads wait until the connection is back.");
+            }
+
+            if (offlineSinceUtc.HasValue && (DateTime.UtcNow - offlineSinceUtc.Value).TotalSeconds > OfflineGiveUpSeconds)
+                return false;
+
+            if (!IsInvoking(nameof(LoadAllAds)))
+                Invoke(nameof(LoadAllAds), OfflineRecheckSeconds);
+            return true;
+        }
+
         private void LoadInterstitialWithRetry()
         {
-            if (!CanLoadAds || interstitialAd == null || isInterstitialLoading || DeferLoadWhileBusy())
+            if (!CanLoadAds || interstitialAd == null || isInterstitialLoading || DeferLoadWhileBusy() || DeferLoadWhileOffline())
                 return;
 
-            isInterstitialLoading = true;
-            MarkLoading(interstitialDiagnostics);
-            interstitialAd.LoadAd();
+            RequestInterstitialLoad();
         }
 
         private void LoadRewardedWithRetry()
         {
-            if (!CanLoadAds || rewardedAd == null || isRewardedLoading || DeferLoadWhileBusy())
+            if (!CanLoadAds || rewardedAd == null || isRewardedLoading || DeferLoadWhileBusy() || DeferLoadWhileOffline())
                 return;
 
-            isRewardedLoading = true;
-            MarkLoading(rewardedDiagnostics);
-            rewardedAd.LoadAd();
+            RequestRewardedLoad();
         }
 
-        private static float GetRetryDelay(int attempt) =>
-            Mathf.Min(MaxRetryAttempt, attempt) * BaseRetryDelaySeconds;
+        /// <summary>Exponential backoff (2, 4, 8 ... capped) with +-20% jitter so devices do not retry in lockstep.</summary>
+        private static float GetRetryDelay(int attempt)
+        {
+            float delay = Mathf.Min(MaxRetryDelaySeconds, BaseRetryDelaySeconds * Mathf.Pow(2f, Mathf.Max(0, attempt - 1)));
+            return delay * UnityEngine.Random.Range(0.8f, 1.2f);
+        }
+
+        /// <summary>
+        /// Records a failed load and schedules the next attempt, or pauses loading once the retry
+        /// budget is spent (resumed by a show request, an app resume or <see cref="ForceReloadAds"/>).
+        /// Load failures are logged as warnings: no-fill is routine and must not become a crash-reporter event.
+        /// </summary>
+        private void ScheduleLoadRetry(AdFormatDiagnostics diag, string errorCode, string errorMessage, int attempt, string retryMethod)
+        {
+            bool exhausted = attempt >= MaxLoadRetryAttempts;
+            float delay = exhausted ? 0f : GetRetryDelay(attempt);
+            MarkLoadFailed(diag, errorCode, errorMessage, delay);
+
+            string noFillTag = errorCode == NoFillErrorCode.ToString() ? " [no fill]" : string.Empty;
+            string reason = $"{errorCode ?? "?"}: {errorMessage ?? "no details"}{noFillTag}";
+
+            if (exhausted)
+            {
+                diag.RetriesExhausted = true;
+                diag.NextRetryAtUtc = null;
+                LogAd(AdLogLevel.Warning, $"{diag.Format} LOAD FAILED ({reason}), attempt {attempt}. Retry budget spent - loads paused until the player asks for an ad, the app resumes or ForceReloadAds().");
+                return;
+            }
+
+            LogAd(AdLogLevel.Warning, $"{diag.Format} LOAD FAILED ({reason}). Retry {attempt}/{MaxLoadRetryAttempts} in {delay:F0}s.");
+
+            CancelInvoke(retryMethod);
+            Invoke(retryMethod, delay);
+        }
+
+        /// <summary>Error 629 means a load collided with an on-screen ad: wait for it to close, do not count a failure.</summary>
+        private bool HandleLoadWhileShowing(AdFormatDiagnostics diag, LevelPlayAdError error)
+        {
+            if (error == null || error.ErrorCode != LoadWhileShowingErrorCode)
+                return false;
+
+            diag.IsLoading = false;
+            diag.LoadingSinceUtc = null;
+            if (diag.State == AdFormatState.Loading)
+                diag.State = AdFormatState.Idle;
+
+            LogAd(AdLogLevel.Info, $"{diag.Format} load rejected (629): a full-screen ad is on screen - retrying once it closes.");
+            MarkFullscreenBusy();
+            DeferLoadWhileBusy();
+            return true;
+        }
+
+        /// <summary>
+        /// The SDK occasionally never answers a load (no loaded / failed callback). Without this the
+        /// "loading" flag stays true forever and that format never loads again.
+        /// </summary>
+        private IEnumerator LoadWatchdogRoutine()
+        {
+            var wait = new WaitForSecondsRealtime(5f);
+
+            while (true)
+            {
+                yield return wait;
+
+                if (isPaused || IsFullscreenBusy)
+                    continue;
+
+                if (isInterstitialLoading && IsLoadStuck(interstitialDiagnostics))
+                {
+                    isInterstitialLoading = false;
+                    interstitialDiagnostics.LoadTimeouts++;
+                    interstitialRetryAttempt++;
+                    ScheduleLoadRetry(interstitialDiagnostics, "LoadTimeout", $"no callback within {LoadTimeoutSeconds:0}s", interstitialRetryAttempt, nameof(LoadInterstitialWithRetry));
+                }
+
+                if (isRewardedLoading && IsLoadStuck(rewardedDiagnostics))
+                {
+                    isRewardedLoading = false;
+                    rewardedDiagnostics.LoadTimeouts++;
+                    rewardedRetryAttempt++;
+                    ScheduleLoadRetry(rewardedDiagnostics, "LoadTimeout", $"no callback within {LoadTimeoutSeconds:0}s", rewardedRetryAttempt, nameof(LoadRewardedWithRetry));
+                }
+            }
+        }
+
+        private static bool IsLoadStuck(AdFormatDiagnostics diag)
+        {
+            var seconds = diag.LoadingForSeconds;
+            return seconds.HasValue && seconds.Value > LoadTimeoutSeconds;
+        }
 
         // ── Diagnostics bookkeeping (kept out of the callbacks for readability) ──────
 
@@ -1147,6 +1367,7 @@ namespace Wagenheimer.LevelPlayHelper
             diag.IsLoading = false;
             diag.LoadingSinceUtc = null;
             diag.RetryAttempt = 0;
+            diag.RetriesExhausted = false;
             diag.NextRetryAtUtc = null;
             diag.LastErrorCode = null;
             diag.LastErrorMessage = null;
@@ -1156,13 +1377,13 @@ namespace Wagenheimer.LevelPlayHelper
             diag.State = AdFormatState.Ready;
         }
 
-        private void MarkLoadFailed(AdFormatDiagnostics diag, LevelPlayAdError error, float retryDelaySeconds)
+        private static void MarkLoadFailed(AdFormatDiagnostics diag, string errorCode, string errorMessage, float retryDelaySeconds)
         {
             diag.IsLoading = false;
             diag.LoadingSinceUtc = null;
             diag.RetryAttempt++;
-            diag.LastErrorCode = error?.ErrorCode.ToString();
-            diag.LastErrorMessage = error?.ErrorMessage;
+            diag.LastErrorCode = errorCode;
+            diag.LastErrorMessage = errorMessage;
             diag.LastErrorAtUtc = DateTime.UtcNow;
             diag.NextRetryAtUtc = DateTime.UtcNow.AddSeconds(retryDelaySeconds);
             diag.LoadsFailed++;
@@ -1172,6 +1393,11 @@ namespace Wagenheimer.LevelPlayHelper
         private static void MarkDisplayed(AdFormatDiagnostics diag, LevelPlayAdInfo adInfo)
         {
             StoreAdInfo(diag, adInfo);
+            var now = DateTime.UtcNow;
+            diag.LastDisplayedUtc = now;
+            diag.ShowsDisplayed++;
+            if (diag.LastShowRequestedUtc.HasValue)
+                diag.LastDisplayLatencySeconds = (float)(now - diag.LastShowRequestedUtc.Value).TotalSeconds;
             diag.State = AdFormatState.Showing;
         }
 
@@ -1191,25 +1417,44 @@ namespace Wagenheimer.LevelPlayHelper
 
         #region Public Ad Methods
 
-        public bool IsInterstitialReady() =>
-            CanLoadAds && interstitialAd != null && interstitialAd.IsAdReady();
+        public bool IsInterstitialReady()
+        {
+            if (!CanLoadAds || interstitialAd == null)
+                return false;
 
-        public bool IsRewardedAdReady() =>
-            CanLoadAds && rewardedAd != null && rewardedAd.IsAdReady();
+            try { return interstitialAd.IsAdReady(); }
+            catch (Exception e) { LogReadyCheckFailure(InterstitialFormat, e); return false; }
+        }
+
+        public bool IsRewardedAdReady()
+        {
+            if (!CanLoadAds || rewardedAd == null)
+                return false;
+
+            try { return rewardedAd.IsAdReady(); }
+            catch (Exception e) { LogReadyCheckFailure(RewardedFormat, e); return false; }
+        }
+
+        /// <summary>IsAdReady() is polled every frame by some UIs: log a native failure at most every 30 s.</summary>
+        private void LogReadyCheckFailure(string format, Exception e)
+        {
+            if (Time.unscaledTime < nextReadyCheckLogAt)
+                return;
+
+            nextReadyCheckLogAt = Time.unscaledTime + 30f;
+            LogAd(AdLogLevel.Error, $"{format} IsAdReady() threw: {e.Message}");
+        }
 
         public void ShowInterstitial()
         {
-            if (IsInterstitialReady())
+            if (!IsInterstitialReady())
             {
-                MarkFullscreenBusy();
-                BeginAdLoading();
-                interstitialAd.ShowAd();
-            }
-            else
-            {
-                Debug.LogWarning("[LevelPlayHelper] Interstitial not ready yet.");
+                LogAd(AdLogLevel.Warning, $"Interstitial not ready yet (state={interstitialDiagnostics.State}).");
                 LoadInterstitialWithRetry();
+                return;
             }
+
+            StartShow(InterstitialFormat, interstitialDiagnostics, () => interstitialAd.ShowAd());
         }
 
         /// <summary>
@@ -1221,25 +1466,26 @@ namespace Wagenheimer.LevelPlayHelper
         {
             if (IsRewardedAdReady())
             {
+                if (onRewardSuccessCallback != null)
+                    LogAd(AdLogLevel.Warning, "A previous rewarded request was still pending - its callback is replaced.");
+
                 onRewardSuccessCallback = onReward;
-                MarkFullscreenBusy();
-                BeginAdLoading();
-                rewardedAd.ShowAd();
+                StartShow(RewardedFormat, rewardedDiagnostics, () => rewardedAd.ShowAd());
             }
             else if (IsInterstitialReady())
             {
-                Debug.LogWarning("[LevelPlayHelper] Rewarded not ready. Showing interstitial and granting reward.");
-                MarkFullscreenBusy();
-                BeginAdLoading();
-                interstitialAd.ShowAd();
-                onReward?.Invoke();
+                LogAd(AdLogLevel.Warning, $"Rewarded not ready (state={rewardedDiagnostics.State}). Showing interstitial and granting reward.");
+
+                if (StartShow(InterstitialFormat, interstitialDiagnostics, () => interstitialAd.ShowAd()))
+                    Raise(onReward, "reward callback");
+
                 // The rewarded reload is deferred until the interstitial closes (see DeferLoadWhileBusy).
                 LoadRewardedWithRetry();
             }
             else
             {
-                Debug.LogWarning("[LevelPlayHelper] No ads available. Granting reward directly.");
-                onReward?.Invoke();
+                LogAd(AdLogLevel.Warning, $"No ads available (rewarded={rewardedDiagnostics.State}, interstitial={interstitialDiagnostics.State}). Granting reward directly.");
+                Raise(onReward, "reward callback");
                 LoadRewardedWithRetry();
             }
         }
@@ -1262,8 +1508,118 @@ namespace Wagenheimer.LevelPlayHelper
                 return true;
             }
 
-            Debug.LogWarning("[LevelPlayHelper] No ad available (rewarded or interstitial).");
+            LogAd(AdLogLevel.Warning, "No ad available (rewarded or interstitial).");
             return false;
+        }
+
+        /// <summary>
+        /// Marks the format busy, records the request, arms the show watchdog and calls the SDK.
+        /// Returns false (after raising <see cref="OnAdDisplayFailed"/>) when the native call threw.
+        /// </summary>
+        private bool StartShow(string format, AdFormatDiagnostics diag, Action show)
+        {
+            MarkFullscreenBusy();
+            BeginAdLoading();
+
+            diag.ShowsRequested++;
+            diag.LastShowRequestedUtc = DateTime.UtcNow;
+            diag.LastDisplayLatencySeconds = null;
+            LogAd(AdLogLevel.Info, $"{format} SHOW requested (state={diag.State}, adUnit={diag.AdUnitId}, lastNetwork={diag.LastAdNetwork ?? "-"}, net={Application.internetReachability}, paused={isPaused}).");
+
+            StopShowWatch();
+            StartCoroutine(ShowWatchdogRoutine(format, diag, showWatchToken));
+
+            try
+            {
+                show();
+                return true;
+            }
+            catch (Exception e)
+            {
+                FailShow(format, diag, $"ShowAd() threw: {e.Message}");
+                return false;
+            }
+        }
+
+        /// <summary>Cancels the pending show watchdog (displayed / failed / closed arrived).</summary>
+        private void StopShowWatch() => showWatchToken++;
+
+        private void FailShow(string format, AdFormatDiagnostics diag, string message)
+        {
+            StopShowWatch();
+            diag.State = AdFormatState.Failed;
+            diag.LastErrorCode = "ShowFailed";
+            diag.LastErrorMessage = message;
+            diag.LastErrorAtUtc = DateTime.UtcNow;
+
+            LogAd(AdLogLevel.Error, $"{format} SHOW FAILED: {message}");
+            MarkFullscreenFree();
+            EndAdLoading();
+
+            if (format == RewardedFormat)
+                onRewardSuccessCallback = null;
+
+            Raise(OnAdDisplayFailed, format, message, nameof(OnAdDisplayFailed));
+            ScheduleReloadSoon();
+        }
+
+        private void ScheduleReloadSoon()
+        {
+            CancelInvoke(nameof(LoadAllAds));
+            Invoke(nameof(LoadAllAds), 5f);
+        }
+
+        /// <summary>
+        /// ShowAd() was called and the SDK reported neither displayed, failed nor closed. Counts only
+        /// foreground time, so a long ad (app paused behind it) is never mistaken for a hang.
+        /// </summary>
+        private IEnumerator ShowWatchdogRoutine(string format, AdFormatDiagnostics diag, int token)
+        {
+            float waited = 0f;
+
+            while (waited < ShowTimeoutSeconds)
+            {
+                yield return null;
+
+                if (token != showWatchToken)
+                    yield break;
+
+                if (!isPaused)
+                    waited += Mathf.Min(1f, Time.unscaledDeltaTime);
+            }
+
+            if (token != showWatchToken)
+                yield break;
+
+            OnShowTimedOut(format, diag);
+        }
+
+        private void OnShowTimedOut(string format, AdFormatDiagnostics diag)
+        {
+            StopShowWatch();
+            diag.ShowTimeouts++;
+            diag.State = AdFormatState.Failed;
+            diag.LastErrorCode = "ShowTimeout";
+            diag.LastErrorMessage = $"no displayed/failed/closed callback within {ShowTimeoutSeconds:0}s";
+            diag.LastErrorAtUtc = DateTime.UtcNow;
+
+            string report = BuildDiagnosticReport(25);
+
+            // The full snapshot goes out as an Info line (a crash reporter keeps it as a breadcrumb) and the
+            // Error line stays constant so every occurrence groups into one issue.
+            LogAd(AdLogLevel.Info, "Show timeout snapshot:\n" + report);
+            // Raised before the Error line so a subscriber can attach the report to the scope the error event captures.
+            Raise(OnAdShowTimeout, format, report, nameof(OnAdShowTimeout));
+            LogAd(AdLogLevel.Error, $"{format} ShowAd() gave no callback within {ShowTimeoutSeconds:0}s - giving up.");
+
+            MarkFullscreenFree();
+            EndAdLoading();
+
+            if (format == RewardedFormat)
+                onRewardSuccessCallback = null;
+
+            Raise(OnAdDisplayFailed, format, "show timeout", nameof(OnAdDisplayFailed));
+            ScheduleReloadSoon();
         }
 
         /// <summary>
@@ -1273,11 +1629,32 @@ namespace Wagenheimer.LevelPlayHelper
         public void ForceReloadAds()
         {
             MarkFullscreenFree();
+            CancelLoadRetries();
             isInterstitialLoading = false;
             isRewardedLoading = false;
             interstitialDiagnostics.IsLoading = false;
             rewardedDiagnostics.IsLoading = false;
+            ResetRetryBudget();
             LoadAllAds();
+        }
+
+        /// <summary>Forgets the failure history so a fresh round of backoff retries can start.</summary>
+        private void ResetRetryBudget()
+        {
+            interstitialRetryAttempt = 0;
+            rewardedRetryAttempt = 0;
+            interstitialDiagnostics.RetryAttempt = 0;
+            rewardedDiagnostics.RetryAttempt = 0;
+            interstitialDiagnostics.RetriesExhausted = false;
+            rewardedDiagnostics.RetriesExhausted = false;
+        }
+
+        private void CancelLoadRetries()
+        {
+            CancelInvoke(nameof(LoadAllAds));
+            CancelInvoke(nameof(LoadInterstitialWithRetry));
+            CancelInvoke(nameof(LoadRewardedWithRetry));
+            CancelInvoke(nameof(BannerRetryLoad));
         }
 
         /// <summary>
@@ -1373,49 +1750,57 @@ namespace Wagenheimer.LevelPlayHelper
             isInterstitialLoading = false;
             interstitialRetryAttempt = 0;
             MarkLoaded(interstitialDiagnostics, adInfo);
-            LogAd(AdLogLevel.Success, "Interstitial LOADED");
-            OnAdLoaded?.Invoke(InterstitialFormat);
+            LogAd(AdLogLevel.Success, $"Interstitial LOADED ({adInfo?.AdNetwork ?? "?"}).");
+            Raise(OnAdLoaded, InterstitialFormat, nameof(OnAdLoaded));
         }
 
         private void OnInterstitialLoadFailed(LevelPlayAdError error)
         {
             isInterstitialLoading = false;
-            interstitialRetryAttempt++;
 
-            float delay = GetRetryDelay(interstitialRetryAttempt);
-            MarkLoadFailed(interstitialDiagnostics, error, delay);
-            LogAd(AdLogLevel.Error, $"Interstitial LOAD FAILED ({error.ErrorCode}: {error.ErrorMessage}). Retrying in {delay:F0}s.");
-            OnAdLoadFailed?.Invoke(InterstitialFormat, error.ErrorMessage);
-            Invoke(nameof(LoadInterstitialWithRetry), delay);
+            if (HandleLoadWhileShowing(interstitialDiagnostics, error))
+                return;
+
+            interstitialRetryAttempt++;
+            ScheduleLoadRetry(interstitialDiagnostics, error?.ErrorCode.ToString(), error?.ErrorMessage, interstitialRetryAttempt, nameof(LoadInterstitialWithRetry));
+            Raise(OnAdLoadFailed, InterstitialFormat, error?.ErrorMessage ?? "unknown", nameof(OnAdLoadFailed));
         }
 
         private void OnInterstitialDisplayed(LevelPlayAdInfo adInfo)
         {
+            StopShowWatch();
             EndAdLoading();
             MarkDisplayed(interstitialDiagnostics, adInfo);
-            LogAd(AdLogLevel.Info, "Interstitial displayed.");
-            OnAdDisplayed?.Invoke(InterstitialFormat);
+            LogAd(AdLogLevel.Info, $"Interstitial displayed{FormatDisplayLatency(interstitialDiagnostics)}.");
+            Raise(OnAdDisplayed, InterstitialFormat, nameof(OnAdDisplayed));
         }
 
         private void OnInterstitialDisplayFailed(LevelPlayAdInfo adInfo, LevelPlayAdError error)
         {
+            StopShowWatch();
+            interstitialDiagnostics.State = AdFormatState.Failed;
             interstitialDiagnostics.LastErrorCode = error?.ErrorCode.ToString();
             interstitialDiagnostics.LastErrorMessage = error?.ErrorMessage;
-            LogAd(AdLogLevel.Error, $"Interstitial DISPLAY FAILED: {error.ErrorMessage}");
+            interstitialDiagnostics.LastErrorAtUtc = DateTime.UtcNow;
+            LogAd(AdLogLevel.Error, $"Interstitial DISPLAY FAILED ({error?.ErrorCode}: {error?.ErrorMessage ?? "no details"}).");
             MarkFullscreenFree();
             EndAdLoading();
-            OnAdDisplayFailed?.Invoke(InterstitialFormat, error.ErrorMessage);
+            Raise(OnAdDisplayFailed, InterstitialFormat, error?.ErrorMessage ?? "unknown", nameof(OnAdDisplayFailed));
             LoadAllAds();
         }
 
         private void OnInterstitialClosedInternal(LevelPlayAdInfo adInfo)
         {
+            StopShowWatch();
             interstitialDiagnostics.State = AdFormatState.Closed;
+            interstitialDiagnostics.LastClosedUtc = DateTime.UtcNow;
             LogAd(AdLogLevel.Info, "Interstitial closed.");
             MarkFullscreenFree();
             EndAdLoading();
-            OnAdClosed?.Invoke(InterstitialFormat);
-            OnInterstitialClosed?.Invoke();
+
+            // Subscribers are isolated (Raise) so a throwing handler can never skip the reload below.
+            Raise(OnAdClosed, InterstitialFormat, nameof(OnAdClosed));
+            Raise(OnInterstitialClosed, nameof(OnInterstitialClosed));
             LoadAllAds();
         }
 
@@ -1434,62 +1819,71 @@ namespace Wagenheimer.LevelPlayHelper
             isRewardedLoading = false;
             rewardedRetryAttempt = 0;
             MarkLoaded(rewardedDiagnostics, adInfo);
-            LogAd(AdLogLevel.Success, "Rewarded LOADED");
-            OnAdLoaded?.Invoke(RewardedFormat);
+            LogAd(AdLogLevel.Success, $"Rewarded LOADED ({adInfo?.AdNetwork ?? "?"}).");
+            Raise(OnAdLoaded, RewardedFormat, nameof(OnAdLoaded));
         }
 
         private void OnRewardedLoadFailed(LevelPlayAdError error)
         {
             isRewardedLoading = false;
-            rewardedRetryAttempt++;
 
-            float delay = GetRetryDelay(rewardedRetryAttempt);
-            MarkLoadFailed(rewardedDiagnostics, error, delay);
-            LogAd(AdLogLevel.Error, $"Rewarded LOAD FAILED ({error.ErrorCode}: {error.ErrorMessage}). Retrying in {delay:F0}s.");
-            OnAdLoadFailed?.Invoke(RewardedFormat, error.ErrorMessage);
-            Invoke(nameof(LoadRewardedWithRetry), delay);
+            if (HandleLoadWhileShowing(rewardedDiagnostics, error))
+                return;
+
+            rewardedRetryAttempt++;
+            ScheduleLoadRetry(rewardedDiagnostics, error?.ErrorCode.ToString(), error?.ErrorMessage, rewardedRetryAttempt, nameof(LoadRewardedWithRetry));
+            Raise(OnAdLoadFailed, RewardedFormat, error?.ErrorMessage ?? "unknown", nameof(OnAdLoadFailed));
         }
 
         private void OnRewardedDisplayed(LevelPlayAdInfo adInfo)
         {
+            StopShowWatch();
             EndAdLoading();
             MarkDisplayed(rewardedDiagnostics, adInfo);
-            LogAd(AdLogLevel.Info, "Rewarded ad displayed.");
-            OnAdDisplayed?.Invoke(RewardedFormat);
+            LogAd(AdLogLevel.Info, $"Rewarded ad displayed{FormatDisplayLatency(rewardedDiagnostics)}.");
+            Raise(OnAdDisplayed, RewardedFormat, nameof(OnAdDisplayed));
         }
 
         private void OnRewardedDisplayFailed(LevelPlayAdInfo adInfo, LevelPlayAdError error)
         {
+            StopShowWatch();
+            rewardedDiagnostics.State = AdFormatState.Failed;
             rewardedDiagnostics.LastErrorCode = error?.ErrorCode.ToString();
             rewardedDiagnostics.LastErrorMessage = error?.ErrorMessage;
-            LogAd(AdLogLevel.Error, $"Rewarded DISPLAY FAILED: {error.ErrorMessage}");
+            rewardedDiagnostics.LastErrorAtUtc = DateTime.UtcNow;
+            LogAd(AdLogLevel.Error, $"Rewarded DISPLAY FAILED ({error?.ErrorCode}: {error?.ErrorMessage ?? "no details"}).");
             MarkFullscreenFree();
             EndAdLoading();
-            OnAdDisplayFailed?.Invoke(RewardedFormat, error.ErrorMessage);
+            Raise(OnAdDisplayFailed, RewardedFormat, error?.ErrorMessage ?? "unknown", nameof(OnAdDisplayFailed));
             onRewardSuccessCallback = null;
             LoadAllAds();
         }
 
         private void OnRewardedReceived(LevelPlayAdInfo adInfo, LevelPlayReward reward)
         {
-            LogAd(AdLogLevel.Success, $"Reward received: {reward.Amount} {reward.Name}");
+            LogAd(AdLogLevel.Success, $"Reward received: {reward?.Amount} {reward?.Name}");
 
             // Consume the callback here so a later OnAdClosed cannot grant a second time.
             var callback = onRewardSuccessCallback;
             onRewardSuccessCallback = null;
 
-            callback?.Invoke();
-            OnRewardedAdGranted?.Invoke();
+            if (callback == null)
+                LogAd(AdLogLevel.Warning, "Reward received but no request is pending (late reward after a timeout, or a duplicate event).");
+
+            Raise(callback, "reward callback");
+            Raise(OnRewardedAdGranted, nameof(OnRewardedAdGranted));
         }
 
         private void OnRewardedClosed(LevelPlayAdInfo adInfo)
         {
+            StopShowWatch();
             rewardedDiagnostics.State = AdFormatState.Closed;
+            rewardedDiagnostics.LastClosedUtc = DateTime.UtcNow;
             LogAd(AdLogLevel.Info, "Rewarded ad closed.");
-            OnAdClosed?.Invoke(RewardedFormat);
+            Raise(OnAdClosed, RewardedFormat, nameof(OnAdClosed));
 
 #if UNITY_EDITOR
-            // The Editor mock ad does not raise OnAdRewarded in every SDK configuration. Treat a
+            // The Editor mock rewarded ad does not raise OnAdRewarded in every SDK configuration. Treat a
             // close with a still-pending callback as earned so Play mode testing is not a dead end.
             // Editor only: on a device a pending callback means the player skipped the ad.
             var pending = onRewardSuccessCallback;
@@ -1497,8 +1891,8 @@ namespace Wagenheimer.LevelPlayHelper
             {
                 LogAd(AdLogLevel.Warning, "Editor mock rewarded ad closed without the reward callback - granting anyway (Editor only).");
                 onRewardSuccessCallback = null;
-                pending.Invoke();
-                OnRewardedAdGranted?.Invoke();
+                Raise(pending, "reward callback");
+                Raise(OnRewardedAdGranted, nameof(OnRewardedAdGranted));
             }
 #endif
 
@@ -1514,6 +1908,34 @@ namespace Wagenheimer.LevelPlayHelper
         private void OnRewardedInfoChanged(LevelPlayAdInfo adInfo) =>
             StoreAdInfo(rewardedDiagnostics, adInfo);
 
+        private static string FormatDisplayLatency(AdFormatDiagnostics diag) =>
+            diag.LastDisplayLatencySeconds.HasValue ? $" {diag.LastDisplayLatencySeconds.Value:F1}s after the request" : string.Empty;
+
+        #endregion
+
+        #region Event Safety
+
+        // Every public event is raised through these helpers: a throwing subscriber must never abort the
+        // helper's own bookkeeping (reload after close, busy flag, reward consumption).
+
+        private void Raise(Action handler, string name)
+        {
+            try { handler?.Invoke(); }
+            catch (Exception e) { LogAd(AdLogLevel.Error, $"Subscriber of {name} threw: {e}"); }
+        }
+
+        private void Raise<T>(Action<T> handler, T arg, string name)
+        {
+            try { handler?.Invoke(arg); }
+            catch (Exception e) { LogAd(AdLogLevel.Error, $"Subscriber of {name} threw: {e}"); }
+        }
+
+        private void Raise<T1, T2>(Action<T1, T2> handler, T1 arg1, T2 arg2, string name)
+        {
+            try { handler?.Invoke(arg1, arg2); }
+            catch (Exception e) { LogAd(AdLogLevel.Error, $"Subscriber of {name} threw: {e}"); }
+        }
+
         #endregion
 
         #region Banner Callbacks
@@ -1522,15 +1944,27 @@ namespace Wagenheimer.LevelPlayHelper
         {
             MarkLoaded(bannerDiagnostics, adInfo);
             LogAd(AdLogLevel.Success, "Banner LOADED");
-            OnAdLoaded?.Invoke(BannerFormat);
+            Raise(OnAdLoaded, BannerFormat, nameof(OnAdLoaded));
         }
 
         private void OnBannerLoadFailed(LevelPlayAdError error)
         {
-            MarkLoadFailed(bannerDiagnostics, error, 60f);
-            LogAd(AdLogLevel.Error, $"Banner LOAD FAILED ({error.ErrorCode}: {error.ErrorMessage}). Retrying in 60s.");
-            OnAdLoadFailed?.Invoke(BannerFormat, error.ErrorMessage);
-            Invoke(nameof(BannerRetryLoad), 60f);
+            int attempt = bannerDiagnostics.RetryAttempt + 1;
+            float delay = Mathf.Min(300f, 30f * Mathf.Pow(2f, attempt - 1));
+            MarkLoadFailed(bannerDiagnostics, error?.ErrorCode.ToString(), error?.ErrorMessage, delay);
+            Raise(OnAdLoadFailed, BannerFormat, error?.ErrorMessage ?? "unknown", nameof(OnAdLoadFailed));
+
+            if (attempt >= MaxLoadRetryAttempts)
+            {
+                bannerDiagnostics.RetriesExhausted = true;
+                bannerDiagnostics.NextRetryAtUtc = null;
+                LogAd(AdLogLevel.Warning, $"Banner LOAD FAILED ({error?.ErrorCode}: {error?.ErrorMessage}). Retry budget spent - paused until the app resumes.");
+                return;
+            }
+
+            LogAd(AdLogLevel.Warning, $"Banner LOAD FAILED ({error?.ErrorCode}: {error?.ErrorMessage}). Retry {attempt}/{MaxLoadRetryAttempts} in {delay:F0}s.");
+            CancelInvoke(nameof(BannerRetryLoad));
+            Invoke(nameof(BannerRetryLoad), delay);
         }
 
         private void BannerRetryLoad()
@@ -1538,6 +1972,7 @@ namespace Wagenheimer.LevelPlayHelper
             if (bannerAd == null)
                 return;
 
+            bannerDiagnostics.RetriesExhausted = false;
             MarkLoading(bannerDiagnostics);
             bannerAd.LoadAd();
         }
@@ -1546,15 +1981,16 @@ namespace Wagenheimer.LevelPlayHelper
         {
             MarkDisplayed(bannerDiagnostics, adInfo);
             LogAd(AdLogLevel.Info, "Banner displayed.");
-            OnAdDisplayed?.Invoke(BannerFormat);
+            Raise(OnAdDisplayed, BannerFormat, nameof(OnAdDisplayed));
         }
 
         private void OnBannerDisplayFailed(LevelPlayAdInfo adInfo, LevelPlayAdError error)
         {
             bannerDiagnostics.LastErrorCode = error?.ErrorCode.ToString();
             bannerDiagnostics.LastErrorMessage = error?.ErrorMessage;
-            LogAd(AdLogLevel.Error, $"Banner DISPLAY FAILED: {error.ErrorMessage}");
-            OnAdDisplayFailed?.Invoke(BannerFormat, error.ErrorMessage);
+            LogAd(AdLogLevel.Error, $"Banner DISPLAY FAILED: {error?.ErrorMessage}");
+            Raise(OnAdDisplayFailed, BannerFormat, error?.ErrorMessage ?? "unknown", nameof(OnAdDisplayFailed));
+            CancelInvoke(nameof(BannerRetryLoad));
             Invoke(nameof(BannerRetryLoad), 60f);
         }
 
@@ -1614,8 +2050,53 @@ namespace Wagenheimer.LevelPlayHelper
             double revenue = impressionData.Revenue ?? 0d;
             LogAd(AdLogLevel.Revenue, $"IMPRESSION: {impressionData.AdNetwork} / {impressionData.AdFormat} / ${revenue:F4} ({impressionData.MediationAdUnitId})");
 
-            OnAdRevenuePaid?.Invoke(impressionData.MediationAdUnitId, revenue);
-            OnImpressionDataReady?.Invoke(impressionData);
+            Raise(OnAdRevenuePaid, impressionData.MediationAdUnitId, revenue, nameof(OnAdRevenuePaid));
+            Raise(OnImpressionDataReady, impressionData, nameof(OnImpressionDataReady));
+        }
+
+        #endregion
+
+        #region App Lifecycle
+
+        /// <summary>
+        /// Stops the retry timers while the app is in the background (they would only burn the retry
+        /// budget against a suspended network stack) and restarts everything on resume.
+        /// </summary>
+        private void OnApplicationPause(bool paused)
+        {
+            isPaused = paused;
+
+            if (paused)
+            {
+                pausedAtUtc = DateTime.UtcNow;
+                LogAd(AdLogLevel.Info, "App paused.");
+                CancelLoadRetries();
+                return;
+            }
+
+            double away = pausedAtUtc.HasValue ? (DateTime.UtcNow - pausedAtUtc.Value).TotalSeconds : 0d;
+            pausedAtUtc = null;
+            LogAd(AdLogLevel.Info, $"App resumed after {away:F0}s (net={Application.internetReachability}, fullscreenBusy={IsFullscreenBusy}).");
+
+            if (initState == SdkInitState.Failed && !isSdkInitialized)
+            {
+                initFailureCount = 0;
+                CancelInvoke(nameof(Initialize));
+                Initialize();
+                return;
+            }
+
+            if (!adObjectsCreated || !CanLoadAds)
+                return;
+
+            ResetRetryBudget();
+            LoadAllAds();
+
+            if (bannerAd != null && bannerDiagnostics.State == AdFormatState.Failed)
+            {
+                bannerDiagnostics.RetryAttempt = 0;
+                BannerRetryLoad();
+            }
         }
 
         #endregion
@@ -1629,6 +2110,12 @@ namespace Wagenheimer.LevelPlayHelper
 
             CancelInvoke();
             StopAllCoroutines();
+
+            if (adLoadingRaised)
+            {
+                adLoadingRaised = false;
+                Raise(OnAdLoadingChanged, false, nameof(OnAdLoadingChanged));
+            }
 
             LevelPlay.OnInitSuccess -= OnInitSuccess;
             LevelPlay.OnInitFailed -= OnInitFailed;
@@ -1658,6 +2145,7 @@ namespace Wagenheimer.LevelPlayHelper
                 rewardedAd.OnAdClicked -= OnRewardedClicked;
                 rewardedAd.OnAdInfoChanged -= OnRewardedInfoChanged;
                 rewardedAd.OnAdImpressionDataReady -= OnImpressionDataReadyInternal;
+                rewardedAd.DestroyAd();
                 rewardedAd = null;
             }
 

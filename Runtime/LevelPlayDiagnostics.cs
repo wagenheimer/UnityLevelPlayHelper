@@ -152,6 +152,33 @@ namespace Wagenheimer.LevelPlayHelper
         /// <summary>Total failed loads since launch.</summary>
         public int LoadsFailed;
 
+        /// <summary>True once the retry budget is spent: loads stay paused until a show request, app resume or <c>ForceReloadAds</c>.</summary>
+        public bool RetriesExhausted;
+
+        /// <summary>Loads that never produced a callback and were abandoned by the load watchdog.</summary>
+        public int LoadTimeouts;
+
+        /// <summary>UTC instant the last <c>ShowAd()</c> was requested.</summary>
+        public DateTime? LastShowRequestedUtc;
+
+        /// <summary>UTC instant the last ad reached the screen.</summary>
+        public DateTime? LastDisplayedUtc;
+
+        /// <summary>UTC instant the last ad was dismissed.</summary>
+        public DateTime? LastClosedUtc;
+
+        /// <summary>Seconds between the last show request and the ad reaching the screen.</summary>
+        public float? LastDisplayLatencySeconds;
+
+        /// <summary>Total <c>ShowAd()</c> calls.</summary>
+        public int ShowsRequested;
+
+        /// <summary>Total ads that reached the screen.</summary>
+        public int ShowsDisplayed;
+
+        /// <summary>Show requests for which the SDK never reported displayed / failed / closed in time.</summary>
+        public int ShowTimeouts;
+
         /// <summary>Seconds until the next retry, or null when none is scheduled.</summary>
         public float? NextRetryInSeconds =>
             NextRetryAtUtc.HasValue
@@ -177,7 +204,12 @@ namespace Wagenheimer.LevelPlayHelper
             sb.Append(" retry=").Append(RetryAttempt);
             var next = NextRetryInSeconds;
             if (next.HasValue) sb.Append(" nextRetryIn=").Append(next.Value.ToString("F0")).Append('s');
+            if (RetriesExhausted) sb.Append(" RETRIES-EXHAUSTED");
             sb.Append(" loads=").Append(LoadsSucceeded).Append('/').Append(LoadsFailed);
+            if (LoadTimeouts > 0) sb.Append(" loadTimeouts=").Append(LoadTimeouts);
+            sb.Append(" shows=").Append(ShowsDisplayed).Append('/').Append(ShowsRequested);
+            if (ShowTimeouts > 0) sb.Append(" showTimeouts=").Append(ShowTimeouts);
+            if (LastDisplayLatencySeconds.HasValue) sb.Append(" lastShowLatency=").Append(LastDisplayLatencySeconds.Value.ToString("F1")).Append('s');
             return sb.ToString();
         }
     }
