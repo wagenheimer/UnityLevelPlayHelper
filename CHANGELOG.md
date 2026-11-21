@@ -5,6 +5,13 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.20.0] - 2026-11-21
+
+### Added
+- iOS build step that writes the SKAdNetwork ids of Unity Ads, ironSource and the networks they bid with (82 ids) into
+  `Info.plist` automatically. The list is compiled in (no build-time download, safe on offline build agents) and ids
+  already present, for example from LevelPlay's own processor, are never duplicated
+
 ## [2.19.0] - 2026-11-21
 
 ### Added
