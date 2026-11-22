@@ -18,7 +18,7 @@ namespace Wagenheimer.LevelPlayHelper.UI
     /// </summary>
     [AddComponentMenu("Tools/Wagenheimer/Level Play/Level Play Debug Overlay")]
     [DisallowMultipleComponent]
-    public class LevelPlayDebugOverlay : MonoBehaviour
+    public partial class LevelPlayDebugOverlay : MonoBehaviour
     {
         #region Settings
 
@@ -345,6 +345,8 @@ namespace Wagenheimer.LevelPlayHelper.UI
             content.Add(BuildStatusCard());
             content.Add(BuildConsentCard());
             content.Add(BuildFormatsCard());
+            content.Add(BuildNetworksCard());
+            content.Add(BuildTestToolsCard());
             content.Add(BuildActionsCard());
             content.Add(BuildLogCard());
 
@@ -519,11 +521,6 @@ namespace Wagenheimer.LevelPlayHelper.UI
             {
                 helper.ForceReloadAds();
                 helper.LogAd(AdLogLevel.Info, "ForceReloadAds() called from the overlay.");
-            }));
-            row1.Add(ActionButton("Test Suite", ColorAccentOrange, helper =>
-            {
-                helper.LaunchTestSuite();
-                helper.LogAd(AdLogLevel.Warning, "LaunchTestSuite() called (requires enableTestSuite before init).");
             }));
             card.Add(row1);
 
@@ -700,7 +697,8 @@ namespace Wagenheimer.LevelPlayHelper.UI
                 $"COPPA: {(helper.ConsentConfig != null && helper.ConsentConfig.coppaChildDirected ? "on" : "off")}";
 
             var muted = new StringBuilder();
-            muted.Append("App Key: ").Append(Mask(helper.EffectiveAppKey));
+            muted.Append("Plugin: ").Append(Unity.Services.LevelPlay.LevelPlay.PluginVersion);
+            muted.Append("    App Key: ").Append(Mask(helper.EffectiveAppKey));
             muted.Append("    Banner: ").Append(helper.IsBannerCreated ? "created" : "not created");
             if (!string.IsNullOrEmpty(helper.LastInitError))
                 muted.Append("    Last init error: ").Append(helper.LastInitError);
@@ -729,6 +727,9 @@ namespace Wagenheimer.LevelPlayHelper.UI
                     ("Hide", () => helper.HideBanner()),
                     ("Destroy", () => helper.DestroyBanner())
                 });
+
+            RefreshNetworks(helper);
+            RefreshTestTools(helper);
 
             // ── Log ─────────────────────────────────────────────────────────────
             RefreshLog(helper);

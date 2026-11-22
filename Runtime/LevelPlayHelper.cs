@@ -292,6 +292,10 @@ namespace Wagenheimer.LevelPlayHelper
         private readonly AdFormatDiagnostics interstitialDiagnostics = new AdFormatDiagnostics { Format = InterstitialFormat };
         private readonly AdFormatDiagnostics rewardedDiagnostics = new AdFormatDiagnostics { Format = RewardedFormat };
         private readonly AdFormatDiagnostics bannerDiagnostics = new AdFormatDiagnostics { Format = BannerFormat };
+        private readonly LevelPlayNetworkStats networkStats = new LevelPlayNetworkStats();
+
+        /// <summary>Per-network (provider) session statistics: auctions won, displays, impressions, revenue.</summary>
+        public LevelPlayNetworkStats NetworkStats => networkStats;
 
         #endregion
 
@@ -582,7 +586,8 @@ namespace Wagenheimer.LevelPlayHelper
             sb.AppendLine($"App key           : {Mask(EffectiveAppKey)} [{(UsesMockAppKey ? "MOCK" : EffectiveHasAppKey ? "set" : "MISSING")}]");
             sb.AppendLine($"Consent           : GDPR={(consentConfig.enableGDPRConsent ? "on" : "off")} CCPA={(consentConfig.ccpaOptOut ? "on" : "off")} COPPA={(consentConfig.coppaChildDirected ? "on" : "off")} stored={PlayerPrefs.GetInt(CONSENT_KEY, 0) == 1}");
             sb.AppendLine($"ATT               : {trackingState} (request={(trackingConfig.requestAuthorization ? "on" : "off")}, usage description={(string.IsNullOrWhiteSpace(trackingConfig.usageDescription) ? "MISSING" : "set")})");
-            sb.AppendLine($"Test suite        : {enableTestSuite}");
+            sb.AppendLine($"LevelPlay plugin  : {LevelPlay.PluginVersion}");
+            sb.AppendLine($"Test suite        : {IsTestSuiteActive} (inspector={enableTestSuite}, next launch={TestSuiteOnNextLaunch}) adapters debug={AdaptersDebugEnabled}");
             sb.AppendLine($"OS                : {SystemInfo.operatingSystem}");
             sb.AppendLine($"Memory (MB)       : system={SystemInfo.systemMemorySize} gpu={SystemInfo.graphicsMemorySize} managed={GC.GetTotalMemory(false) / (1024 * 1024)}");
             sb.AppendLine($"Network           : {Application.internetReachability}{(wasOffline ? " (deferring loads)" : string.Empty)}");
@@ -600,6 +605,8 @@ namespace Wagenheimer.LevelPlayHelper
             AppendLastError(sb, bannerDiagnostics);
             sb.AppendLine();
             sb.AppendLine($"Diagnosis         : {Diagnose() ?? "healthy"}");
+            sb.AppendLine();
+            networkStats.AppendReport(sb);
             sb.AppendLine();
             sb.AppendLine("--- last events ---");
             foreach (var entry in SnapshotLog(logLines))
@@ -797,10 +804,15 @@ namespace Wagenheimer.LevelPlayHelper
             LevelPlay.OnInitSuccess += OnInitSuccess;
             LevelPlay.OnInitFailed += OnInitFailed;
 
-            if (enableTestSuite)
+            // Both must be set before Init: the SDK reads them only while initializing.
+            testSuiteActive = enableTestSuite || TestSuiteOnNextLaunch;
+            if (testSuiteActive)
                 LevelPlay.SetMetaData("is_test_suite", "enable");
 
-            LogAd(AdLogLevel.Info, $"Initializing LevelPlay SDK... (app key {Mask(appKey)})");
+            if (AdaptersDebugEnabled)
+                LevelPlay.SetAdaptersDebug(true);
+
+            LogAd(AdLogLevel.Info, $"Initializing LevelPlay SDK... (app key {Mask(appKey)}, plugin {LevelPlay.PluginVersion}{(testSuiteActive ? ", test suite ON" : string.Empty)}{(AdaptersDebugEnabled ? ", adapters debug ON" : string.Empty)})");
             LevelPlay.Init(appKey);
 
             StartCoroutine(InitWatchdog());
@@ -1375,6 +1387,7 @@ namespace Wagenheimer.LevelPlayHelper
             diag.LastLoadedAtUtc = DateTime.UtcNow;
             diag.LoadsSucceeded++;
             diag.State = AdFormatState.Ready;
+            networkStats.RecordLoad(diag.Format, adInfo);
         }
 
         private static void MarkLoadFailed(AdFormatDiagnostics diag, string errorCode, string errorMessage, float retryDelaySeconds)
@@ -1390,9 +1403,10 @@ namespace Wagenheimer.LevelPlayHelper
             diag.State = AdFormatState.Failed;
         }
 
-        private static void MarkDisplayed(AdFormatDiagnostics diag, LevelPlayAdInfo adInfo)
+        private void MarkDisplayed(AdFormatDiagnostics diag, LevelPlayAdInfo adInfo)
         {
             StoreAdInfo(diag, adInfo);
+            networkStats.RecordDisplay(diag.Format, adInfo);
             var now = DateTime.UtcNow;
             diag.LastDisplayedUtc = now;
             diag.ShowsDisplayed++;
@@ -1657,11 +1671,66 @@ namespace Wagenheimer.LevelPlayHelper
             CancelInvoke(nameof(BannerRetryLoad));
         }
 
+        private const string TestSuitePrefKey = "Wagenheimer.LevelPlayHelper.TestSuiteNextLaunch";
+        private const string AdaptersDebugPrefKey = "Wagenheimer.LevelPlayHelper.AdaptersDebug";
+        private bool testSuiteActive;
+
         /// <summary>
-        /// Opens the LevelPlay Test Suite on device. The "is_test_suite" metadata must have been
-        /// set before initialization, i.e. <see cref="enableTestSuite"/> has to be enabled in the Inspector.
+        /// True when this session initialized with the Test Suite enabled (Inspector flag or
+        /// <see cref="TestSuiteOnNextLaunch"/>). Only then can <see cref="LaunchTestSuite"/> open it.
         /// </summary>
-        public void LaunchTestSuite() => LevelPlay.LaunchTestSuite();
+        public bool IsTestSuiteActive => testSuiteActive;
+
+        /// <summary>
+        /// Enables the Test Suite on the next app launch without a rebuild. The SDK only accepts the
+        /// "is_test_suite" flag before Init, so the change applies after a restart. Stored in PlayerPrefs.
+        /// </summary>
+        public static bool TestSuiteOnNextLaunch
+        {
+            get => PlayerPrefs.GetInt(TestSuitePrefKey, 0) == 1;
+            set
+            {
+                PlayerPrefs.SetInt(TestSuitePrefKey, value ? 1 : 0);
+                PlayerPrefs.Save();
+            }
+        }
+
+        /// <summary>Verbose adapter logs (logcat / Xcode console). Stored in PlayerPrefs and applied before Init.</summary>
+        public static bool AdaptersDebugEnabled => PlayerPrefs.GetInt(AdaptersDebugPrefKey, 0) == 1;
+
+        /// <summary>Turns verbose adapter logging on or off now and for the next launches.</summary>
+        public void SetAdaptersDebug(bool enabled)
+        {
+            PlayerPrefs.SetInt(AdaptersDebugPrefKey, enabled ? 1 : 0);
+            PlayerPrefs.Save();
+            LevelPlay.SetAdaptersDebug(enabled);
+            LogAd(AdLogLevel.Info, $"Adapters debug {(enabled ? "ON" : "OFF")} (fully applies from the next launch).");
+        }
+
+        /// <summary>
+        /// Opens the LevelPlay Test Suite on device. Works only when <see cref="IsTestSuiteActive"/>;
+        /// otherwise enable <see cref="TestSuiteOnNextLaunch"/> and restart the app.
+        /// </summary>
+        public void LaunchTestSuite()
+        {
+            if (!testSuiteActive)
+            {
+                LogAd(AdLogLevel.Warning, "Test Suite is not active in this session - enable it for the next launch and restart the app.");
+                return;
+            }
+
+            LevelPlay.LaunchTestSuite();
+        }
+
+        /// <summary>
+        /// Runs the SDK integration check. The result (adapters, SDK versions, manifest/plist) goes to
+        /// logcat on Android (tag "IntegrationHelper") and to the Xcode console on iOS.
+        /// </summary>
+        public void ValidateIntegration()
+        {
+            LevelPlay.ValidateIntegration();
+            LogAd(AdLogLevel.Info, "ValidateIntegration() called - read the result in logcat (tag IntegrationHelper) or the Xcode console.");
+        }
 
         /// <summary>
         /// Copies <see cref="BuildDiagnosticReport"/> to the system clipboard. No-op on
@@ -2049,6 +2118,7 @@ namespace Wagenheimer.LevelPlayHelper
             // thread-safety (e.g. dispatch to main thread for analytics SDKs).
             double revenue = impressionData.Revenue ?? 0d;
             LogAd(AdLogLevel.Revenue, $"IMPRESSION: {impressionData.AdNetwork} / {impressionData.AdFormat} / ${revenue:F4} ({impressionData.MediationAdUnitId})");
+            networkStats.RecordImpression(impressionData);
 
             Raise(OnAdRevenuePaid, impressionData.MediationAdUnitId, revenue, nameof(OnAdRevenuePaid));
             Raise(OnImpressionDataReady, impressionData, nameof(OnImpressionDataReady));
